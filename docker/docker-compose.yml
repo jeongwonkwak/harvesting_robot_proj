@@ -1,0 +1,157 @@
+# =============================================================================
+# Strawberry Harvest 팀 - 시뮬레이션 + 실로봇 연동 환경
+# -----------------------------------------------------------------------------
+# 컨테이너:
+#   1) isaac-sim       : NVIDIA Isaac Sim 5.1 스트리밍 엔진 (GPU)         [profile: sim]
+#   2) dsr_emulator    : 두산 로봇 에뮬레이터 (E0509, TCP 12345)            [profile: robot, dev]
+#   3) ros2-lab        : ROS2 Humble + YOLO26 + cuRobo + Quadtree 제어부   [profile: dev]
+#   4) smolvla-server  : SmolVLA 추론 서버 (FastAPI 8000)                  [profile: vla]
+#
+# 부분 실행 예시:
+#   docker compose --profile dev up -d                # ros2-lab + dsr_emulator
+#   docker compose --profile vla up -d                # smolvla-server 만
+#   docker compose --profile sim --profile dev up -d  # sim + dev 동시
+#   docker compose --profile all up -d                # 4개 전부
+#
+# 개인 인스턴스 (한 컴퓨터에 여러 팀원이 동시 띄울 때):
+#   .env 에서 USER_ID 를 본인 아이디로 지정 → 컨테이너 이름이 자동 prefix.
+# =============================================================================
+services:
+  # --------------------------------------------------------------------------
+  # 1) Isaac Sim 엔진 (GPU 시뮬레이터, WebRTC 스트리밍 8011 포트)
+  # --------------------------------------------------------------------------
+  isaac-sim:
+    image: nvcr.io/nvidia/isaac-sim:5.1.0
+    container_name: ${USER_ID:-team}_sim_engine
+    profiles: ["sim", "all"]      # 부분 실행: --profile sim
+    runtime: nvidia
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - ACCEPT_EULA=Y           # NVIDIA EULA 자동 동의 (필수)
+      - OMNI_KIT_ALLOW_ROOT=1   # 컨테이너 내부 root 실행 허용
+    shm_size: '2gb'             # 시뮬레이터 공유 메모리 확장
+    working_dir: /isaac-sim
+    # 검증된 스트리밍 진입 스크립트 (포트 8011로 WebRTC 송출)
+    command: ./isaac-sim.streaming.sh
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # --------------------------------------------------------------------------
+  # 2) 두산 로봇 에뮬레이터 (실로봇 대신 사용, host 12345 포트)
+  # --------------------------------------------------------------------------
+  dsr_emulator:
+    image: doosanrobot/dsr_emulator:3.4.1
+    container_name: ${USER_ID:-team}_robot_emulator
+    profiles: ["robot", "dev", "all"]   # dev 프로필에서도 자동 동반 기동
+    network_mode: host          # ros2-lab에서 localhost:12345로 직접 접근
+    privileged: true            # 커널 실시간 리소스 접근 (RT 스케줄링)
+    environment:
+      - ROBOT_MODEL=E0509       # 구동할 두산 협동로봇 모델
+    command: ["12345", "e0509"]
+    restart: always
+
+  # --------------------------------------------------------------------------
+  # 3) ROS2 제어부 + GUI (NoVNC 8080, Isaac WebRTC 뷰어 9000)
+  # --------------------------------------------------------------------------
+  ros2-lab:
+    build:
+      context: .
+      dockerfile: Dockerfile    # ros2-lab 메인 이미지 (ROS2 Humble)
+    image: strawberry_harvest/ros2-lab:latest   # 빌드 결과 공유용 태그
+    container_name: ${USER_ID:-team}_ros2_lab
+    profiles: ["dev", "all"]    # ros2-lab 작업 시 --profile dev
+    runtime: nvidia
+    network_mode: host
+    privileged: true
+    restart: unless-stopped
+    shm_size: '2gb'              # YOLO 멀티프로세스 + Isaac 통신용 공유메모리 확장
+    # 🌟 GPU 노출 (nvidia-container-toolkit 가 CUDA 라이브러리 inject)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, utility, compute]
+    depends_on:
+      - dsr_emulator             # dev 프로필에 함께 포함됨
+    volumes:
+      # 호스트 프로젝트 루트를 컨테이너의 /root/dev 로 마운트
+      - /home/user01/harvesting_robot_miniproj:/root/dev
+      # cuRobo 소스 (컨테이너 진입 후 `pip install -e /root/curobo` 로 설치)
+      - /home/user01/curobo:/root/curobo
+      # RealSense 등 USB 카메라/센서 직결 (RealSense 안 쓰면 주석 처리 가능)
+      - /dev/bus/usb:/dev/bus/usb
+      # HuggingFace / torch 모델 캐시 (YOLO 가중치 등 재다운로드 방지)
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ~/.cache/torch:/root/.cache/torch
+    working_dir: /root/dev
+    environment:
+      - DISPLAY=:99
+      # ★ 팀원별로 .env에서 1~4로 설정 (기본 1)
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-1}
+      # CycloneDDS → FastRTPS 로 변경 (Isaac Sim과 호환성 향상)
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - QT_X11_NO_MITSHM=1
+      # SmolVLA 서버 호출 주소 (host network 이므로 localhost)
+      - SMOLVLA_URL=http://127.0.0.1:8000
+      # GUI(NoVNC) 자동 기동 스위치 — 기본 OFF. .env 에서 ENABLE_GUI=1 로 켤 수 있음.
+      - ENABLE_GUI=${ENABLE_GUI:-0}
+      # NVIDIA 라이브러리 inject (nvidia-smi, libcuda 등)
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+      # YOLO 설정 폴더 (Ultralytics writable 경로 경고 회피)
+      - YOLO_CONFIG_DIR=/root/dev/.ultralytics_cfg
+    stdin_open: true
+    tty: true
+    # ENABLE_GUI=1 이면 NoVNC GUI 자동 기동, 그 외에는 bash 로 진입 (기본 OFF)
+    entrypoint: ["bash", "-lc",
+      "if [ \"$$ENABLE_GUI\" = \"1\" ]; then exec /usr/local/bin/start_gui.sh; else echo 'GUI 비활성. /usr/local/bin/start_gui.sh 로 수동 기동 가능.'; exec bash; fi"]
+
+  # --------------------------------------------------------------------------
+  # 4) SmolVLA 추론 서버 (FastAPI, port 8000) - 팀원 담당
+  #    이미지/instruction → action 추론을 HTTP API 로 노출
+  # --------------------------------------------------------------------------
+  smolvla-server:
+    build:
+      # 빌드 context 는 docker/ — smolvla/serve_smolvla.py 가 docker/ 내부로 이동됨
+      context: .
+      dockerfile: Dockerfile.smolvla
+    image: strawberry_harvest/smolvla-server:latest
+    container_name: ${USER_ID:-team}_smolvla_server
+    profiles: ["vla", "all"]     # SmolVLA 작업 시 --profile vla
+    runtime: nvidia
+    network_mode: host           # ros2-lab 에서 localhost:8000 으로 호출
+    restart: unless-stopped
+    shm_size: '2gb'
+    volumes:
+      # 서버 코드 핫리로드 (개발 편의) — 이제 docker/smolvla/ 에 위치
+      - /home/user01/harvesting_robot_miniproj/docker/smolvla:/app
+      # 모델 가중치 마운트 — 호스트 공용 /home/user01/models/ 사용
+      # SmolVLA 가중치는 /home/user01/models/vla-model/ 에 두세요.
+      - /home/user01/models:/models
+      # HuggingFace 캐시 (모델 재다운로드 방지)
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    environment:
+      - MODEL_PATH=/models/vla-model
+      - DEVICE=cuda:0
+      - PORT=8000
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 60s

@@ -51,7 +51,7 @@ docker login nvcr.io
 
 ---
 
-## 2. 프로젝트 구조
+## 2. 프로젝트 Docker 구조
 
 ```
 /home/user01/harvesting_robot_miniproj/
@@ -157,19 +157,16 @@ docker compose --profile all down -v         # 볼륨까지 정리
 docker compose stop <서비스>                  # 특정 서비스만 멈춤
 ```
 
-### 4-2. 중지/정리
-```bash
-docker compose down            # 컨테이너만 정리
-docker compose down -v         # 볼륨까지 정리
-```
-
-### 4-3. 로그 확인
+### 4-4. 로그 확인
 ```bash
 # ROS2 제어부 로그 실시간
 docker compose logs -f ros2-lab
 
 # Isaac Sim 준비 완료 대기 (약 60~90초)
 docker compose logs -f isaac-sim | grep -E "app ready|Streaming|http|url|8011"
+
+# SmolVLA 서버 로그
+docker compose logs -f smolvla-server
 ```
 
 ---
@@ -178,6 +175,15 @@ docker compose logs -f isaac-sim | grep -E "app ready|Streaming|http|url|8011"
 
 컨테이너 이름은 `.env` 의 `USER_ID` 값이 prefix 로 붙습니다. 예: `USER_ID=jiwoo` → `jiwoo_ros2_lab`.
 
+> ⚠️ **`${USER_ID}` 는 셸 변수입니다.** 아래 명령어를 그대로 복붙할 때, 셸이 `.env` 를 자동으로 안 읽으니 **둘 중 하나** 선택:
+> ```bash
+> # (방법 A) 셸에 .env 값을 한 번 로드
+> set -a && source .env && set +a
+>
+> # (방법 B) 컨테이너 이름을 직접 (예: USER_ID=team1 인 경우)
+> docker exec -it team1_ros2_lab bash
+> ```
+
 | 역할 | 컨테이너 이름 | 진입 명령 |
 |------|---------------|----------|
 | Isaac Sim 엔진 | `${USER_ID}_sim_engine`   | `docker exec -it ${USER_ID}_sim_engine bash` |
@@ -185,10 +191,9 @@ docker compose logs -f isaac-sim | grep -E "app ready|Streaming|http|url|8011"
 | ROS2 제어부 (메인 작업 환경) | `${USER_ID}_ros2_lab` | `docker exec -it ${USER_ID}_ros2_lab bash` |
 | SmolVLA 추론 서버 | `${USER_ID}_smolvla_server` | `docker exec -it ${USER_ID}_smolvla_server bash` |
 
-ROS2 컨테이너에서 진입 없이 바로 명령 실행:
+ROS2 컨테이너에서 진입 없이 바로 명령 실행 (`.bashrc` / `/etc/profile.d/ros2.sh` / ENV PATH 어디서든 ros2 가 잡힘):
 ```bash
-docker exec -it ${USER_ID}_ros2_lab \
-  bash -c "source /opt/ros/humble/setup.bash && ros2 topic list"
+docker exec -it ${USER_ID}_ros2_lab bash -c "ros2 topic list"
 ```
 
 ---
@@ -251,33 +256,55 @@ docker exec -it ${USER_ID}_ros2_lab \
 | WebRTC 뷰어가 `서버 오류` | `docker compose logs -f isaac-sim` 에서 `app ready` 로그 나올 때까지 대기 (약 60~90초) |
 | `Permission denied: /dev/bus/usb` | RealSense 카메라 미연결이면 무시 가능. 연결 시 호스트에서 `lsusb` 로 인식 확인 |
 | SmolVLA 서버가 503 응답 | `docker compose logs -f smolvla-server` 확인. `serve_smolvla.py` 의 `load_model()` 이 아직 placeholder 일 수 있음 (팀원 작업 필요) |
-| SmolVLA 모델 가중치 못 찾음 | `models/vla-model/` 폴더에 가중치 배치 또는 `MODEL_PATH` 를 HF 허브 ID 로 변경 |
+| SmolVLA 모델 가중치 못 찾음 | 호스트의 `/home/user01/models/vla-model/` 에 가중치 배치 (컨테이너에는 `/models/vla-model` 로 보임). 또는 `.env` 의 `MODEL_PATH` 를 HF 허브 ID 로 변경 |
 | 컨테이너 모두 OOM (GPU 메모리 부족) | Isaac Sim + YOLO + SmolVLA 동시 가동 시 발생. SmolVLA 환경변수 `DEVICE=cuda:0` 을 `cpu` 로 임시 변경하거나 한 컨테이너씩 기동 |
 
 ---
 
-## 9. 우리 팀 스택 패키지 (ros2-lab 컨테이너에 추가됨)
+## 9. 우리 팀 스택 패키지 (메인 5개 기준 최소 구성)
 
-빌드된 `ros2-lab` 컨테이너 안에서 바로 import 가능합니다.
+빌드된 `ros2-lab` 컨테이너 안에서 바로 import 가능한 것 (✅) 과 별도 처리 필요한 것 (🛠️) 으로 구분.
 
-| 분야 | 패키지 | 주요 모듈/명령 |
-|------|--------|----------------|
-| **비전 (YOLO)** | `ultralytics`, `opencv-python`, `pillow`, `onnx`, `onnxruntime-gpu` | `from ultralytics import YOLO` |
-| **VLA / Transformer** | `transformers`, `accelerate`, `huggingface_hub`, `safetensors`, `datasets`, `einops`, `sentencepiece` | `from transformers import AutoModel` |
-| **Quadtree / Spatial** | `Pyqtree`, `Rtree`, `shapely`, `open3d`, `trimesh` | `from pyqtree import Index` |
-| **HTTP 클라이언트** | `requests`, `httpx` | SmolVLA 서버 호출용 |
-| **MoveIt2 보강** | `moveit-planners-ompl`, `moveit-ros-visualization`, `moveit-servo`, `pilz-industrial-motion-planner` | RViz MotionPlanning 패널, 실시간 서보잉 |
-| **3D 점유 그리드** | `octomap`, `octomap-msgs` | 3D quadtree 대안 |
-| **TF 디버깅** | `tf2-tools` | `ros2 run tf2_tools view_frames` |
-| **개발 편의** | `tmux`, `vim`, `nano`, `htop`, `net-tools` | 컨테이너 내부 작업 |
+### 9-A. `ros2-lab` 에 사전 설치된 것 (✅)
 
-### 9-1. ros2-lab 안에서 YOLO 동작 확인
+| 분야 | 패키지 / 버전 | 주요 import |
+|------|---------------|-------------|
+| **PyTorch** | `torch==2.7.0+cu128`, `torchvision==0.22.0` (RTX 50 sm_120 지원) | `import torch` |
+| **공통 수치** | `numpy==1.26.0` | `import numpy` |
+| **비전 (YOLO26)** | `ultralytics`, `opencv-python==4.11.0.86`, `pillow==11.3.0` | `from ultralytics import YOLO` |
+| **Quadtree** | `Pyqtree` | `from pyqtree import Index` |
+| **HTTP 클라이언트** | `requests` | SmolVLA 서버 호출 |
+| **ROS2 Humble 코어** | `ros2_control`, `ros2_controllers`, `control-msgs`, `realtime-tools`, `moveit`(코어), `moveit-configs-utils`, `moveit-ros-move-group`, `joint-state-publisher` | apt |
+| **빌드 도구** | `python3-colcon-common-extensions`, `build-essential`, `cmake` | colcon, gcc |
+
+### 9-B. 컨테이너 진입 후 1회 수동 설치 (🛠️)
+
+| 분야 | 처리 방법 | 비고 |
+|------|-----------|------|
+| **cuRobo** | `pip install -e /root/curobo` (호스트에서 마운트됨) | §13 참고. 자동 의존성: `warp-lang`, `yourdfpy`, `trimesh`, `scipy`, `scikit-image`, `pybind11`, `networkx`, `numpy-quaternion`, `pyyaml`, `tqdm` |
+| **Doosan ROS2 드라이버** | `colcon build` (소스 `/opt/doosan_ws/src/doosan-robot2` 미리 클론됨) | §11 참고 |
+
+### 9-C. 별도 컨테이너 전담 (🚫 ros2-lab 에서는 import 안 됨)
+
+| 분야 | 어느 컨테이너 | 들어 있는 것 |
+|------|---------------|--------------|
+| **SmolVLA / Transformers** | `smolvla-server` | `lerobot[smolvla]`, `transformers`, `accelerate`, `huggingface_hub`, `safetensors`, `datasets`, `einops`, `sentencepiece`, `fastapi`, `uvicorn`, `pydantic`, `opencv-python-headless` |
+| **Isaac Sim 5.1** | `isaac-sim` | NGC 이미지 그대로 |
+
+### 9-D. ros2-lab 안에서 YOLO 동작 확인
 ```bash
-docker exec -it strawberry_harvest_ros2_lab bash
-python3 -c "from ultralytics import YOLO; m = YOLO('yolov8n.pt'); print(m.names)"
+docker exec -it ${USER_ID}_ros2_lab bash
+python3 -c "
+import torch
+from ultralytics import YOLO
+import numpy as np
+m = YOLO('yolo11n.pt')   # 자동 다운로드
+r = m.predict(np.zeros((640,640,3), dtype='uint8'), device='cuda:0', verbose=False)
+print('OK | device =', r[0].boxes.data.device, '| torch', torch.__version__)
+"
 ```
 
-### 9-2. SmolVLA 서버 호출 예시 (ros2-lab 내부에서)
+### 9-E. SmolVLA 서버 호출 예시 (ros2-lab 내부에서)
 ```python
 import base64, requests, cv2
 
@@ -292,6 +319,13 @@ resp = requests.post(
 )
 print(resp.json())
 ```
+
+### 9-F. 빠진 항목 (메인 5개 외 — 필요 시 컨테이너 안에서 개별 설치)
+- `shapely`, `open3d`, `trimesh`(명시), `Rtree`, `onnx`, `onnxruntime-gpu`, `httpx`
+- MoveIt 보강 (`moveit-planners-ompl`, `moveit-servo`, `pilz-industrial-motion-planner` 등)
+- `octomap`, `octomap-msgs`, `tf2-tools`
+- RealSense / ArUco / cv-bridge ROS 패키지
+- 개발 편의 (`tmux`, `vim`, `nano`, `htop`, `net-tools`)
 
 ---
 
@@ -329,7 +363,7 @@ huggingface-cli download <repo_id> --local-dir /home/user01/models/vla-model
 
 ### 10-5. 서버 코드 직접 실행 (디버깅용)
 ```bash
-docker exec -it strawberry_harvest_smolvla_server bash
+docker exec -it ${USER_ID}_smolvla_server bash
 cd /app
 python serve_smolvla.py
 ```
@@ -342,13 +376,12 @@ Dockerfile 에서 `/opt/doosan_ws/src/doosan-robot2` 로 소스만 클론해 두
 컨테이너 안에서 직접 빌드하세요:
 
 ```bash
-docker exec -it strawberry_harvest_ros2_lab bash
+docker exec -it ${USER_ID}_ros2_lab bash
 cd /opt/doosan_ws
-source /opt/ros/humble/setup.bash
 rosdep update
 rosdep install --from-paths src --ignore-src -r -y
 colcon build --symlink-install
-echo "source /opt/doosan_ws/install/setup.bash" >> /root/.bashrc
+source /opt/doosan_ws/install/setup.bash   # 이미 .bashrc 에 자동 source 됨
 ```
 
 빌드 후 새 터미널에서 `ros2 pkg list | grep dsr` 로 패키지 노출 확인:
