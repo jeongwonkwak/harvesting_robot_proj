@@ -58,7 +58,7 @@ docker login nvcr.io
 ├── docker/                     ← 도커 관련 모든 파일 (한 곳에 정리됨)
 │   ├── docker-compose.yml      ← 4개 컨테이너 + profiles 정의
 │   ├── Dockerfile              ← ros2-lab (Humble + YOLO26 + Pyqtree)
-│   ├── Dockerfile.smolvla      ← smolvla-server (FastAPI + lerobot[smolvla])
+│   ├── Dockerfile.smolvla      ← smolvla-server (FastAPI + lerobot[smolvla] 최신)
 │   ├── .env.example            ← USER_ID / ROS_DOMAIN_ID / ENABLE_GUI 템플릿
 │   ├── README_DOCKER.md        ← 본 문서
 │   └── smolvla/
@@ -256,6 +256,7 @@ docker exec -it ${USER_ID}_ros2_lab \
 | WebRTC 뷰어가 `서버 오류` | `docker compose logs -f isaac-sim` 에서 `app ready` 로그 나올 때까지 대기 (약 60~90초) |
 | `Permission denied: /dev/bus/usb` | RealSense 카메라 미연결이면 무시 가능. 연결 시 호스트에서 `lsusb` 로 인식 확인 |
 | SmolVLA 서버가 503 응답 | `docker compose logs -f smolvla-server` 확인. `serve_smolvla.py` 의 `load_model()` 이 아직 placeholder 일 수 있음 (팀원 작업 필요) |
+| `smolvla-server` 빌드에서 `ResolutionImpossible (numpy 충돌)` | 현재 정책은 **cv2 안정성 우선**: `lerobot[smolvla]` 최신 설치 후 `rerun-sdk` 제거, `numpy==1.26.0` + `opencv-python-headless==4.11.0.86` 마지막 재고정 |
 | SmolVLA 모델 가중치 못 찾음 | 호스트의 `/home/user01/models/vla-model/` 에 가중치 배치 (컨테이너에는 `/models/vla-model` 로 보임). 또는 `.env` 의 `MODEL_PATH` 를 HF 허브 ID 로 변경 |
 | 컨테이너 모두 OOM (GPU 메모리 부족) | Isaac Sim + YOLO + SmolVLA 동시 가동 시 발생. SmolVLA 환경변수 `DEVICE=cuda:0` 을 `cpu` 로 임시 변경하거나 한 컨테이너씩 기동 |
 
@@ -288,7 +289,7 @@ docker exec -it ${USER_ID}_ros2_lab \
 
 | 분야 | 어느 컨테이너 | 들어 있는 것 |
 |------|---------------|--------------|
-| **SmolVLA / Transformers** | `smolvla-server` | `lerobot[smolvla]`, `transformers`, `accelerate`, `huggingface_hub`, `safetensors`, `datasets`, `einops`, `sentencepiece`, `fastapi`, `uvicorn`, `pydantic`, `opencv-python-headless` |
+| **SmolVLA / Transformers** | `smolvla-server` | `lerobot[smolvla]`(현재 검증 버전 `0.5.2`), `fastapi`, `uvicorn`, `pydantic`, `opencv-python-headless==4.11.0.86`, `numpy==1.26.0` (`rerun-sdk`는 의도적으로 제외) |
 | **Isaac Sim 5.1** | `isaac-sim` | NGC 이미지 그대로 |
 
 ### 9-D. ros2-lab 안에서 YOLO 동작 확인
@@ -298,7 +299,7 @@ python3 -c "
 import torch
 from ultralytics import YOLO
 import numpy as np
-m = YOLO('yolo11n.pt')   # 자동 다운로드
+m = YOLO('yolo26m.pt')   # 자동 다운로드
 r = m.predict(np.zeros((640,640,3), dtype='uint8'), device='cuda:0', verbose=False)
 print('OK | device =', r[0].boxes.data.device, '| torch', torch.__version__)
 "
@@ -330,6 +331,9 @@ print(resp.json())
 ---
 
 ## 10. SmolVLA 추론 서버 빌드/운영
+
+> 버전 정책 메모(중요): `smolvla-server` 는 `lerobot[smolvla]` 최신을 설치하되, `numpy==1.26.0` + `opencv-python-headless==4.11.0.86` 조합을 유지합니다.  
+> `cv2` ABI 안정성을 위해 `lerobot` 설치 후 `rerun-sdk` 를 제거하고 `numpy/cv2` 를 마지막에 재고정합니다.
 
 ### 10-1. 빌드만 따로 하기
 ```bash
@@ -440,7 +444,7 @@ pip install -e .
 python3 -c "from curobo.types.robot import RobotConfig; print('cuRobo OK')"
 ```
 
-## 14. 부분 빌드/실행 매트릭스 ⭐
+## 14. 부분 빌드/실행 매트릭스
 
 | 시나리오 | 명령 | 띄워지는 것 |
 |----------|------|-------------|
