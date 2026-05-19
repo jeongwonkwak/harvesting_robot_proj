@@ -214,6 +214,7 @@ class StrawberryYoloNode(Node):
         # 자동 연속 수확
         self.auto_mode = False
         self.pending_auto_pick = False
+        self._auto_blocked_tids = set()
         self.create_subscription(Empty, "/dsr01/curobo/pick_complete", self._pick_complete_cb, 10)
 
         self.get_logger().info(
@@ -230,6 +231,12 @@ class StrawberryYoloNode(Node):
 
     def _pick_complete_cb(self, msg):
         self._log_pick_result("pick_complete")
+        if self.auto_mode and self._last_attempt is not None:
+            candidate = self._last_attempt.get("candidate") or {}
+            tid = candidate.get("track_id", self._last_attempt.get("locked_tid"))
+            if tid is not None:
+                self._auto_blocked_tids.add(int(tid))
+                self.get_logger().info(f"Auto block tid={tid} after pick_complete")
         if not self.auto_mode:
             return
         self.locked_pos = None
@@ -601,6 +608,8 @@ class StrawberryYoloNode(Node):
 
             elif key == ord("a"):
                 self.auto_mode = not self.auto_mode
+                if self.auto_mode:
+                    self._auto_blocked_tids.clear()
                 self.get_logger().info(f"Auto mode: {'ON — pick 완료 후 다음 딸기 자동 선택' if self.auto_mode else 'OFF'}")
 
             elif key == ord("y"):
@@ -629,10 +638,20 @@ class StrawberryYoloNode(Node):
             # ── 자동 연속 수확 ────────────────────────────────────────────────
             if self.pending_auto_pick and self.auto_mode:
                 self.pending_auto_pick = False
-                if self.candidates:
-                    p = self.candidates[0][0].pose.position
+                next_idx = None
+                for i in range(len(self.candidates)):
+                    tid = self._candidate_tids[i] if i < len(self._candidate_tids) else None
+                    if tid is None or int(tid) not in self._auto_blocked_tids:
+                        next_idx = i
+                        break
+
+                if next_idx is not None:
+                    p = self.candidates[next_idx][0].pose.position
                     self.locked_pos = [p.x, p.y, p.z]
-                    self.locked_tid = self._candidate_tids[0] if self._candidate_tids else None
+                    self.locked_tid = (
+                        self._candidate_tids[next_idx]
+                        if next_idx < len(self._candidate_tids) else None
+                    )
                     target = PoseStamped()
                     target.header.frame_id = "base_link"
                     target.header.stamp = self.get_clock().now().to_msg()
@@ -640,11 +659,12 @@ class StrawberryYoloNode(Node):
                     target.pose.position.y = self.locked_pos[1]
                     target.pose.position.z = self.locked_pos[2]
                     self.pick_pub.publish(target)
-                    self._log_pick_attempt("auto", target, 0)
+                    self._log_pick_attempt("auto", target, next_idx)
                     self.get_logger().info(
-                        f"Auto-pick → X:{p.x:.3f} Y:{p.y:.3f} Z:{p.z:.3f}")
+                        f"Auto-pick [{next_idx+1}] tid={self.locked_tid} → "
+                        f"X:{p.x:.3f} Y:{p.y:.3f} Z:{p.z:.3f}")
                 else:
-                    self.get_logger().info("Auto mode: 더 이상 딸기 없음 — Auto OFF")
+                    self.get_logger().info("Auto mode: 더 이상 시도할 딸기 없음 — Auto OFF")
                     self.auto_mode = False
 
         except SystemExit:

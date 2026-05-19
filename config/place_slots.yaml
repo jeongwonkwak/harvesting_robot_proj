@@ -1,0 +1,35 @@
+generated_by: manual_merge
+updated_at: '2026-05-19T15:06:05'
+posx_service: /dsr01/aux_control/get_current_posx
+notes:
+  - slot0.above was taught with teach_place_slots.py.
+  - slot0.release was provided from a manually checked TCP place pose.
+slots:
+  - name: slot0
+    above:
+      joints_deg:
+        - 9.551157242880118
+        - 37.26353135673027
+        - 69.79425388282945
+        - 1.597711874233859
+        - 64.82081065754964
+        - -87.8676379361677
+      posx:
+        - 619.32568359375
+        - 112.71575927734375
+        - 62.887577056884766
+        - 19.670631408691406
+        - 171.74330139160156
+        - -77.17103576660156
+        - 2.0
+      ref: 0
+      captured_at: '2026-05-19T15:06:05'
+    release:
+      joints_deg:
+        - 9.55
+        - 45.76
+        - 64.29
+        - 1.6
+        - 64.82
+        - -87.87
+      posx: null

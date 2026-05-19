@@ -12,6 +12,7 @@ import time
 import torch
 import numpy as np
 import json
+import yaml
 
 import rclpy
 from rclpy.node import Node
@@ -31,23 +32,49 @@ from curobo.geom.types import WorldConfig, Cuboid
 # ── 딸기 접근 파라미터 ────────────────────────────────────────────────────────
 APPROACH_OFFSET  = 0.15    # 딸기 앞 15cm (TCP 기준)
 STAGING_EXTRA    = 0.15    # staging 추가 거리: approach보다 15cm 더 뒤
-GRASP_OFFSET     = -0.03   # TCP를 딸기 중심보다 벽 방향으로 3cm 더 밀어 넣음
+GRASP_OFFSET     = -0.035   # TCP를 딸기 중심보다 벽 방향으로 3cm 더 밀어 넣음
+GRASP_RETRY_OFFSETS = [-0.03, 0.0, 0.03]  # 깊은 grasp 실패 시 더 얕은 목표로 재시도
 RETREAT_OFFSET   = 0.20    # 딸기 뒤 20cm
 PRE_BIN_CLEAR_OFFSET = 0.35 # bin 이동 전 벽에서 충분히 빠지는 clear 지점
 GRASP_Z_BIAS     = -0.030  # 검출 중심보다 30mm 낮게 파지
 USE_STAGING      = False   # True: 30cm staging → 15cm approach → grasp
 USE_PRE_BIN_CLEAR = False  # True: retreat 후 clear 지점을 거쳐 bin transfer
 USE_BIN_TRANSFER = True    # True: bin 전 HOME/안전 관절 자세 경유
+USE_CUROBO_FIXED_POSES = False # True: bin/home 고정 자세도 FK pose로 cuRobo 우선 계획
 
 GRIPPER_LEN      = 0.160   # ee_link → TCP 거리 (m)
 WALL_UNIT        = np.array([-0.035, 0.996, -0.084])   # 티치펜던트 실측 (2026-05-18)
 WALL_QUAT_WXYZ   = [0.548415, -0.439294, 0.424628, 0.570923]  # ee_link [w,x,y,z] (2026-05-18)
+GRASP_QUAT_RETRY_DEG = [0.0]  # 현장 운용 기본: orientation 고정, 긴 retry 금지
 
 # ── 고정 자세 ─────────────────────────────────────────────────────────────────
 HOME_JOINTS_DEG  = [88.0, -80.0, 130.0, 0.0, 20.0, -90.0]
 HOME_JOINTS_RAD  = np.deg2rad(HOME_JOINTS_DEG).tolist()
 BIN_JOINTS_DEG   = [0.0, 65.0, 25.0, 0.0, 90.0, 0.0]
 BIN_TRANSFER_JOINTS_DEG = HOME_JOINTS_DEG  # 벽에서 빠진 뒤 bin으로 가기 전 안전 관절 자세
+PLACE_SLOTS = [
+    {
+        "name": "slot0",
+        "above": BIN_JOINTS_DEG,    # TODO: 계란판 위 안전 높이 자세로 티칭
+        "release": BIN_JOINTS_DEG,  # TODO: gripper open 할 낮은 자세로 티칭
+    },
+]
+def resolve_place_slots_yaml():
+    """개발 중에는 install 복사본보다 src/config를 단일 진실로 사용한다."""
+    candidates = [
+        os.path.expanduser("~/doosan_ws/src/e0509_gripper_description/config/place_slots.yaml"),
+        os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "config", "place_slots.yaml",
+        ),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return candidates[0]
+
+
+PLACE_SLOTS_YAML = resolve_place_slots_yaml()
 
 # ── 파지 성공 판별 ────────────────────────────────────────────────────────────
 USE_GRASP_CHECK  = False  # /gripper/stroke는 현재 명령값이라 실제 파지 판정에 쓰지 않음
@@ -57,13 +84,110 @@ GRASP_STROKE_MIN = 10   # stroke 이하면 파지 실패 (완전 닫힘)
 USE_SOFT_CLOSE    = True
 GRIPPER_PRE_CLOSE_POS = 300     # 접촉 전 1차 닫힘
 GRIPPER_CONTACT_POS   = 400     # 스퀴지 딸기 표면 접촉 위치
-GRIPPER_HARVEST_POS   = 490     # 스퀴지 딸기 수확 가능한 최소 파지 위치
+GRIPPER_HARVEST_POS   = 500     # 스퀴지 딸기 수확 가능한 최소 파지 위치
 GRIPPER_CLOSE_STEPS = [
     ("pre", GRIPPER_PRE_CLOSE_POS),
     ("contact", GRIPPER_CONTACT_POS),
     ("harvest", GRIPPER_HARVEST_POS),
 ]
 GRIPPER_STEP_DELAY = 1.2               # gripper_service_node가 명령 처리할 시간
+
+
+def load_place_slots():
+    if not os.path.exists(PLACE_SLOTS_YAML):
+        return PLACE_SLOTS
+    with open(PLACE_SLOTS_YAML, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    slots = []
+    for item in data.get("slots", []):
+        name = item.get("name", f"slot{len(slots)}")
+        above = item.get("above", {}).get("joints_deg")
+        release = item.get("release", {}).get("joints_deg")
+        if above is None or release is None:
+            continue
+        slots.append({
+            "name": name,
+            "above": [float(v) for v in above],
+            "release": [float(v) for v in release],
+        })
+    return slots or PLACE_SLOTS
+
+
+def _T(xyz, rpy, q=0.0):
+    cx, cy, cz = np.cos(rpy)
+    sx, sy, sz = np.sin(rpy)
+    rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+    ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+    rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
+    qz = np.array([[np.cos(q), -np.sin(q), 0], [np.sin(q), np.cos(q), 0], [0, 0, 1]])
+    m = np.eye(4)
+    m[:3, :3] = rx @ ry @ rz @ qz
+    m[:3, 3] = xyz
+    return m
+
+
+def e0509_gripper_base_fk(q_rad):
+    """URDF chain 기준 base_link → gripper_rh_p12_rn_base FK."""
+    t = np.eye(4)
+    t = t @ _T([0,      0,       0.2045], [0,          0,           0      ], q_rad[0])
+    t = t @ _T([0,      0,       0     ], [0,         -np.pi/2,    -np.pi/2], q_rad[1])
+    t = t @ _T([0.373,  0,       0     ], [0,          0,           np.pi/2], q_rad[2])
+    t = t @ _T([0,     -0.373,   0     ], [np.pi/2,    0,           0      ], q_rad[3])
+    t = t @ _T([0,      0,       0     ], [-np.pi/2,   0,           0      ], q_rad[4])
+    t = t @ _T([0,     -0.1725,  0     ], [np.pi/2,    0,           0      ], q_rad[5])
+    t = t @ _T([0,      0,       0     ], [0,          0,           np.pi/2])
+    return t
+
+
+def quat_wxyz_from_matrix(r):
+    tr = float(np.trace(r))
+    if tr > 0:
+        s = np.sqrt(tr + 1.0) * 2.0
+        w = 0.25 * s
+        x = (r[2, 1] - r[1, 2]) / s
+        y = (r[0, 2] - r[2, 0]) / s
+        z = (r[1, 0] - r[0, 1]) / s
+    else:
+        i = int(np.argmax(np.diag(r)))
+        if i == 0:
+            s = np.sqrt(1.0 + r[0, 0] - r[1, 1] - r[2, 2]) * 2.0
+            w = (r[2, 1] - r[1, 2]) / s
+            x = 0.25 * s
+            y = (r[0, 1] + r[1, 0]) / s
+            z = (r[0, 2] + r[2, 0]) / s
+        elif i == 1:
+            s = np.sqrt(1.0 + r[1, 1] - r[0, 0] - r[2, 2]) * 2.0
+            w = (r[0, 2] - r[2, 0]) / s
+            x = (r[0, 1] + r[1, 0]) / s
+            y = 0.25 * s
+            z = (r[1, 2] + r[2, 1]) / s
+        else:
+            s = np.sqrt(1.0 + r[2, 2] - r[0, 0] - r[1, 1]) * 2.0
+            w = (r[1, 0] - r[0, 1]) / s
+            x = (r[0, 2] + r[2, 0]) / s
+            y = (r[1, 2] + r[2, 1]) / s
+            z = 0.25 * s
+    q = np.array([w, x, y, z], dtype=float)
+    return (q / np.linalg.norm(q)).tolist()
+
+
+def quat_multiply_wxyz(q1, q2):
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    return [
+        w1*w2 - x1*x2 - y1*y2 - z1*z2,
+        w1*x2 + x1*w2 + y1*z2 - z1*y2,
+        w1*y2 - x1*z2 + y1*w2 + z1*x2,
+        w1*z2 + x1*y2 - y1*x2 + z1*w2,
+    ]
+
+
+def quat_from_axis_angle(axis, angle_rad):
+    axis = np.array(axis, dtype=float)
+    axis = axis / np.linalg.norm(axis)
+    s = np.sin(angle_rad / 2.0)
+    return [np.cos(angle_rad / 2.0), axis[0] * s, axis[1] * s, axis[2] * s]
 
 
 class CuroboPlanner(Node):
@@ -86,6 +210,8 @@ class CuroboPlanner(Node):
         self.current_joints = None
         self.gripper_stroke = None
         self._pick_busy = False
+        self.place_slot_idx = 0
+        self.place_slots = load_place_slots()
 
         # ── cuRobo 초기화 ─────────────────────────────────────────────────────
         config_dir = os.path.join(
@@ -141,7 +267,11 @@ class CuroboPlanner(Node):
             Trigger, "/dsr01/gripper/close", callback_group=self.service_cb_group)
 
         self.get_logger().info("cuRobo Planner Ready!")
-        self.get_logger().info(f"  GRASP_STROKE_MIN={GRASP_STROKE_MIN}  BIN={BIN_JOINTS_DEG}")
+        self.get_logger().info(
+            f"  GRASP_STROKE_MIN={GRASP_STROKE_MIN}  "
+            f"PLACE_SLOTS={len(self.place_slots)}  BIN={BIN_JOINTS_DEG}")
+        if os.path.exists(PLACE_SLOTS_YAML):
+            self.get_logger().info(f"  place slots loaded: {PLACE_SLOTS_YAML}")
 
     # ── 콜백 ─────────────────────────────────────────────────────────────────
 
@@ -299,6 +429,42 @@ class CuroboPlanner(Node):
             self.get_logger().error("MoveJoint failed")
         return ok
 
+    def plan_to_fixed_joints_pose(self, start_joints, target_joints_deg, label, fallback_movej=True):
+        """고정 joint 자세의 ee_link pose를 FK로 구해 cuRobo로 먼저 이동한다."""
+        if not USE_CUROBO_FIXED_POSES:
+            ok = self.movej(target_joints_deg, vel=20.0, acc=20.0)
+            return ok, np.deg2rad(target_joints_deg).tolist()
+
+        target_joints_rad = np.deg2rad(target_joints_deg).tolist()
+        t = e0509_gripper_base_fk(target_joints_rad)
+        pos = t[:3, 3].tolist()
+        quat = quat_wxyz_from_matrix(t[:3, :3])
+        self.get_logger().info(
+            f"{label} CuRobo pose goal={[f'{v*1000:.0f}' for v in pos]}mm")
+        ret = self.plan(start_joints, pos, quat)
+        if ret is not None and self.execute_spline(*ret):
+            return True, ret[0][-1].tolist()
+
+        self.get_logger().warn(f"{label} CuRobo failed")
+        if fallback_movej:
+            self.get_logger().warn(f"{label} fallback MoveJoint")
+            ok = self.movej(target_joints_deg, vel=20.0, acc=20.0)
+            return ok, np.deg2rad(target_joints_deg).tolist()
+        return False, start_joints
+
+    def current_place_slot(self):
+        slot_count = len(self.place_slots)
+        if slot_count == 0:
+            return 0, {"name": "fallback", "above": BIN_JOINTS_DEG, "release": BIN_JOINTS_DEG}
+        idx = min(self.place_slot_idx, slot_count - 1)
+        return idx, self.place_slots[idx]
+
+    def advance_place_slot(self):
+        if self.place_slot_idx < len(self.place_slots) - 1:
+            self.place_slot_idx += 1
+        else:
+            self.get_logger().warn("Place slots exhausted — 마지막 slot 재사용")
+
     def call_trigger(self, client):
         if not client.wait_for_service(timeout_sec=3.0):
             return
@@ -370,6 +536,10 @@ class CuroboPlanner(Node):
         ee_s = straw - (APPROACH_OFFSET + STAGING_EXTRA + GRIPPER_LEN) * WALL_UNIT
         ee_a = straw - (APPROACH_OFFSET + GRIPPER_LEN) * WALL_UNIT
         ee_g = straw - (GRASP_OFFSET    + GRIPPER_LEN) * WALL_UNIT
+        ee_g_candidates = [
+            (offset, straw - (offset + GRIPPER_LEN) * WALL_UNIT)
+            for offset in GRASP_RETRY_OFFSETS
+        ]
         ee_r = straw - (RETREAT_OFFSET  + GRIPPER_LEN) * WALL_UNIT
         ee_clear = straw - (PRE_BIN_CLEAR_OFFSET + GRIPPER_LEN) * WALL_UNIT
 
@@ -423,12 +593,35 @@ class CuroboPlanner(Node):
 
         # CuRobo: approach → grasp
         self.get_logger().info(f"{step} grasp (CuRobo)")
-        ret = self.plan(approach_joints, ee_g.tolist(), WALL_QUAT_WXYZ)
+        ret = None
+        used_grasp_offset = None
+        used_grasp_quat_deg = None
+        for grasp_offset, ee_g_try in ee_g_candidates:
+            if grasp_offset != GRASP_OFFSET:
+                self.get_logger().warn(f"grasp retry offset={grasp_offset:+.3f}m")
+            for quat_deg in GRASP_QUAT_RETRY_DEG:
+                q_retry = quat_multiply_wxyz(
+                    WALL_QUAT_WXYZ,
+                    quat_from_axis_angle([1, 0, 0], np.deg2rad(quat_deg)),
+                )
+                if quat_deg != 0.0:
+                    self.get_logger().warn(f"grasp retry quat_x={quat_deg:+.1f}deg")
+                ret = self.plan(approach_joints, ee_g_try.tolist(), q_retry)
+                if ret is not None:
+                    used_grasp_offset = grasp_offset
+                    used_grasp_quat_deg = quat_deg
+                    break
+            if ret is not None:
+                break
+
         if ret is not None:
             if not self.execute_spline(*ret):
                 self.get_logger().error("ABORT: grasp exec failed")
                 return
             grasp_joints = ret[0][-1].tolist()
+            self.get_logger().info(
+                f"grasp offset used={used_grasp_offset:+.3f}m "
+                f"quat_x={used_grasp_quat_deg:+.1f}deg")
         else:
             # Fallback: 캘리브레이션 seed IK → MoveJoint
             self.get_logger().warn("grasp CuRobo fail → IK-seed fallback")
@@ -492,23 +685,52 @@ class CuroboPlanner(Node):
         if USE_BIN_TRANSFER:
             step += 1
             self.get_logger().info(f"{step} → bin transfer")
-            if not self.movej(BIN_TRANSFER_JOINTS_DEG, vel=20.0, acc=20.0):
+            ok, transfer_joints = self.plan_to_fixed_joints_pose(
+                retreat_joints, BIN_TRANSFER_JOINTS_DEG, "bin transfer")
+            if not ok:
                 self.get_logger().error("ABORT: bin transfer failed — gripper 유지")
                 return
+        else:
+            transfer_joints = retreat_joints
+
+        slot_idx, place_slot = self.current_place_slot()
+        slot_name = place_slot.get("name", f"slot{slot_idx}")
+        above_joints = place_slot["above"]
+        release_joints = place_slot["release"]
 
         step += 1
-        self.get_logger().info(f"{step} → bin")
-        if not self.movej(BIN_JOINTS_DEG, vel=20.0, acc=20.0):
-            self.get_logger().error("ABORT: bin move failed — gripper 유지")
+        self.get_logger().info(f"{step} → place {slot_name} above")
+        ok, above_result_joints = self.plan_to_fixed_joints_pose(
+            transfer_joints, above_joints, f"place {slot_name} above")
+        if not ok:
+            self.get_logger().error("ABORT: place above move failed — gripper 유지")
+            return
+
+        step += 1
+        self.get_logger().info(f"{step} → place {slot_name} release")
+        ok, release_result_joints = self.plan_to_fixed_joints_pose(
+            above_result_joints, release_joints, f"place {slot_name} release")
+        if not ok:
+            self.get_logger().error("ABORT: place release move failed — gripper 유지")
             return
         time.sleep(0.5)
         self.call_trigger(self.cli_gripper_open)
         time.sleep(1.0)
 
+        step += 1
+        self.get_logger().info(f"{step} → place {slot_name} above retreat")
+        ok, bin_joints = self.plan_to_fixed_joints_pose(
+            release_result_joints, above_joints, f"place {slot_name} above retreat")
+        if not ok:
+            self.get_logger().error("Place above retreat failed after release")
+            bin_joints = release_result_joints
+        self.advance_place_slot()
+
         # 9. Home 복귀
         step += 1
         self.get_logger().info(f"{step} → home")
-        if not self.movej(HOME_JOINTS_DEG):
+        ok, _ = self.plan_to_fixed_joints_pose(bin_joints, HOME_JOINTS_DEG, "home")
+        if not ok:
             self.get_logger().error("Home move failed after deposit")
 
         # 10. 완료 신호
