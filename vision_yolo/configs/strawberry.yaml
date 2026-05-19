@@ -7,7 +7,6 @@
 #
 # 픽 정책: ripe만 수확 후보. unripe는 회피.
 
-# vision_yolo 루트에서 학습·추론 실행 시 상대 경로로 해석됨
 path: datasets/yolo
 train: images/train
 val: images/val

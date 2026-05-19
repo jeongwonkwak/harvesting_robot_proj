@@ -107,4 +107,4 @@ auto_augment: randaugment
 erasing: 0.4
 cfg: null
 tracker: botsort.yaml
-save_dir: /home/user01/harvesting_robot_miniproj/vision_yolo/runs/detect/runs/strawberry/yolo26m_unified_640b16
+save_dir: /home/user01/yolo_strawberry/runs/detect/runs/strawberry/yolo26m_unified_640b16

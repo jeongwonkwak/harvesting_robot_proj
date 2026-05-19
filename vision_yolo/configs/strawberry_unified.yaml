@@ -8,7 +8,6 @@
 #   5. user_raw/red_* 사용자 모형 사진 (39장) — HSV 자동 라벨
 #   6. realscene_*    실제 장면 사진 (7장) — 수동 라벨링 (가장 중요!)
 
-# vision_yolo 루트에서 학습·추론 실행 시 상대 경로로 해석됨
 path: datasets/yolo_unified
 train: images/train
 val: images/val
