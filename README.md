@@ -1,44 +1,48 @@
-# E0509 + RH-P12-RN-A Gripper Description
+# 딸기 수확 Motion Pipeline
 
-Doosan E0509 로봇팔과 ROBOTIS RH-P12-RN-A 그리퍼를 결합한 ROS2 패키지
+Doosan E0509 6축 로봇팔, ROBOTIS RH-P12-RN(A) 그리퍼, Intel RealSense eye-in-hand 카메라, YOLO 딸기 검출, cuRobo 모션 플래닝을 연결한 벽면 딸기 pick & place 프로토타입입니다.
 
-## 개요
+이 브랜치는 팀 Git Flow 기준 `feature/motion` 브랜치이며, 딸기 수확 시스템 중 **로봇 팔 motion / gripper / place 티칭** 쪽 기능을 담당합니다.
 
-이 패키지는 Doosan E0509 6축 로봇팔에 ROBOTIS RH-P12-RN-A 그리퍼를 장착한 통합 로봇 시스템을 위한 URDF, launch 파일, 그리퍼 컨트롤러를 제공합니다.
+## 전체 흐름
 
-## 관련 레포지토리
+```text
+strawberry_yolo_node.py
+  RealSense color/depth 수신
+  YOLO 딸기 검출
+  ripe 후보 필터링
+  camera 좌표 -> base_link 좌표 변환
+        |
+        v
+/dsr01/curobo/pick_pose
+        |
+        v
+curobo_planner_node.py
+  gripper open
+  cuRobo approach
+  cuRobo grasp
+  soft close gripper
+  cuRobo retreat
+  bin/place transfer
+  place slot above/release
+  gripper open
+  home
+```
 
-| 레포지토리 | 설명 |
-|-----------|------|
-| **[sim2real](https://github.com/fhekwn549/sim2real)** | Sim2Real 실행 코드 (펜 감지, 캘리브레이션, 정책 실행) |
-| **[CoWriteBotRL](https://github.com/KERNEL3-2/CoWriteBotRL)** | Isaac Lab 기반 강화학습 환경 및 학습 스크립트 |
+## 주요 노드
 
-## 특징
+| 파일 | 역할 |
+| --- | --- |
+| `scripts/curobo_planner_node.py` | cuRobo 기반 pick & place 시퀀스 실행 |
+| `scripts/strawberry_yolo_node.py` | RealSense + YOLO 딸기 검출, ripe 필터링, pick target 발행 |
+| `scripts/joint_jog_control.py` | DART 없이 조인트를 step 각도로 미세 이동하는 티칭 보조 노드 |
+| `scripts/teach_place_slots.py` | Doosan TCP(posx)와 joint 값을 읽어 계란판 slot pose 저장 |
+| `scripts/gripper_service_node.py` | Python 그리퍼 서비스 노드 |
+| `src/gripper_service_node.cpp` | C++ 그리퍼 서비스 노드 |
 
-- E0509 + 그리퍼 결합 URDF/XACRO
-- Doosan Virtual Robot (에뮬레이터) 지원
-- **실제 로봇 그리퍼 제어** (Tool Flange Serial + Modbus RTU)
-- **ROS2 서비스/토픽 기반 그리퍼 제어** (C++ gripper_service_node)
-- **cuRobo GPU 가속 모션 플래닝** (~80ms 경로 생성)
-- **RealSense depth 기반 비전 → 로봇 제어 파이프라인**
-- ros2_control 기반 조인트 제어
-- C++ 실시간 노드 (gripper_service_node, gripper_joint_publisher, gazebo_bridge)
-- RViz 시각화
-- Gazebo 시뮬레이션 지원
-- Digital Twin (실제 로봇 + RViz + Isaac Sim 동기화)
+## Git에 포함하지 않는 로컬 파일
 
-## 의존성
-
-- ROS2 Humble
-- Gazebo Fortress (Ignition Gazebo 6)
-- [doosan-robot2 (Fork)](https://github.com/fhekwn549/doosan-robot2) - Flange Serial 서비스 지원 포함
-- [RH-P12-RN-A](https://github.com/ROBOTIS-GIT/RH-P12-RN-A)
-
-> **중요**: 공식 doosan-robot2가 아닌 **포크한 레포**를 사용해야 합니다. 포크 버전에 그리퍼 제어를 위한 Flange Serial 서비스가 포함되어 있습니다.
-
-## 로컬 전용 파일
-
-아래 파일은 장비/학습 결과에 의존하거나 용량이 커서 Git에 포함하지 않습니다. 실제 로봇에서 딸기 인식 및 eye-in-hand 좌표 변환을 실행하려면 각자 로컬에 배치해야 합니다.
+아래 파일은 장비별/실험별로 달라지거나 용량이 커서 Git에 포함하지 않습니다.
 
 ```text
 models/best.pt
@@ -49,502 +53,213 @@ config/calibration_eye_in_hand_1.npz
 - `config/calibration_eye_in_hand_1.npz`: RealSense eye-in-hand 캘리브레이션 결과
 - `logs/`: pick attempt 이미지/JSONL 로그. 실험 산출물이므로 Git 제외
 
----
+각자 로컬 환경에서 위 경로에 파일을 배치해야 실제 딸기 인식과 좌표 변환이 동작합니다.
 
-## 설치
+## 현재 현장 파라미터
 
-### 1. 워크스페이스 생성 및 패키지 클론
-```bash
-mkdir -p ~/doosan_ws/src
-cd ~/doosan_ws/src
+모형 딸기 몸통 중심 파지 기준으로 현재 사용 중인 값입니다.
 
-# 의존 패키지 클론 (포크한 doosan-robot2 사용)
-git clone -b humble https://github.com/fhekwn549/doosan-robot2.git
-git clone https://github.com/ROBOTIS-GIT/RH-P12-RN-A.git
-
-# 이 패키지 클론
-git clone https://github.com/fhekwn549/e0509_gripper_description.git
+```python
+GRASP_OFFSET = -0.035
+GRASP_Z_BIAS = -0.030
+GRIPPER_HARVEST_POS = 500
 ```
 
-### 2. 의존성 설치 및 빌드
+soft close 프로파일:
+
+```python
+GRIPPER_PRE_CLOSE_POS = 300
+GRIPPER_CONTACT_POS = 400
+GRIPPER_HARVEST_POS = 500
+```
+
+주의:
+
+- 줄기 직접 파지는 아직 안정화되지 않았습니다.
+- `position_cmd=1000`까지 들어가는 실행본도 확인했지만, 줄기는 gripper finger tip 형상/마찰/최소 간격 문제로 안정 파지가 어려웠습니다.
+- 현재는 딸기 몸통 중심을 약하게 잡는 방식으로 운용합니다.
+- `/dsr01/gripper/stroke`는 현재 실행 노드에 따라 실제 피드백이 아니라 명령값처럼 동작할 수 있으므로, 아직 force feedback으로 신뢰하면 안 됩니다.
+
+## 빌드
+
 ```bash
 cd ~/doosan_ws
-rosdep install --from-paths src --ignore-src -r -y
-colcon build --symlink-install
+colcon build --packages-select e0509_gripper_description
 source install/setup.bash
 ```
 
-### 3. 환경 설정
+## 실제 로봇 실행 순서
 
-`~/.bashrc`에 다음 내용 추가:
-```bash
-export ROS_DISTRO='humble'
-source /opt/ros/humble/setup.bash
-source ~/doosan_ws/install/setup.bash
-export IGN_GAZEBO_RESOURCE_PATH=$IGN_GAZEBO_RESOURCE_PATH:~/doosan_ws/install/rh_p12_rn_a_description/share:~/doosan_ws/install/dsr_description2/share
-```
+### 1. Doosan 로봇 및 그리퍼 bringup
 
-적용:
-```bash
-source ~/.bashrc
-```
-
----
-
-## Docker 설치 (Virtual Mode 필수)
-
-Virtual mode 에뮬레이터 사용을 위해 Docker가 필요합니다.
-
-### 1. Docker 설치
-```bash
-# Docker 공식 설치 (https://docs.docker.com/engine/install/ubuntu/)
-sudo apt-get update
-sudo apt-get install -y ca-certificates curl gnupg
-sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-sudo chmod a+r /etc/apt/keyrings/docker.gpg
-
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-sudo apt-get update
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-# 현재 사용자를 docker 그룹에 추가 (재로그인 필요)
-sudo usermod -aG docker $USER
-```
-
-### 2. 에뮬레이터 설치
-```bash
-cd ~/doosan_ws/src/doosan-robot2
-chmod +x ./install_emulator.sh
-sudo ./install_emulator.sh
-```
-
----
-
-## 사용법 (RViz + Virtual Robot)
-
-### 1. RViz 시각화 (조인트 슬라이더)
-```bash
-ros2 launch e0509_gripper_description display.launch.py
-```
-
-### 2. Virtual Robot 실행 (에뮬레이터)
-```bash
-ros2 launch e0509_gripper_description bringup.launch.py mode:=virtual
-```
-
-### 3. 로봇 제어
-```bash
-# 조인트 이동
-ros2 service call /dsr01/motion/move_joint dsr_msgs2/srv/MoveJoint "{pos: [30.0, 0.0, 90.0, 0.0, 90.0, 0.0], vel: 30.0, acc: 30.0}"
-
-# 홈 위치
-ros2 service call /dsr01/motion/move_joint dsr_msgs2/srv/MoveJoint "{pos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], vel: 30.0, acc: 30.0}"
-```
-
-### 4. 그리퍼 제어
-```bash
-# 그리퍼 열기
-ros2 service call /dsr01/gripper/open std_srvs/srv/Trigger
-
-# 그리퍼 닫기
-ros2 service call /dsr01/gripper/close std_srvs/srv/Trigger
-
-# Stroke 값으로 제어 (0=열림, 700=완전히 닫힘)
-ros2 topic pub /dsr01/gripper/position_cmd std_msgs/msg/Int32 "{data: 350}" --once
-```
-
----
-
-## 사용법 (실제 로봇 + 그리퍼)
-
-실제 Doosan E0509 로봇에 RH-P12-RN-A 그리퍼를 연결하여 제어합니다.
-그리퍼는 로봇의 **Tool Flange Serial** 포트를 통해 **Modbus RTU** 프로토콜로 통신합니다.
-
-### 1. 실제 로봇 실행
 ```bash
 ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=<robot_ip>
 ```
 
-### 2. 로봇팔 제어 (MoveJoint 서비스)
-**주의: Doosan 로봇은 도(degree) 단위를 사용합니다.**
-```bash
-# 조인트 이동 (joint_1~6, 단위: 도)
-ros2 service call /dsr01/motion/move_joint dsr_msgs2/srv/MoveJoint "{pos: [0.0, 0.0, 90.0, 0.0, 90.0, 0.0], vel: 30.0, acc: 30.0}"
-
-# 홈 위치로 이동
-ros2 service call /dsr01/motion/move_joint dsr_msgs2/srv/MoveJoint "{pos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], vel: 30.0, acc: 30.0}"
-```
-
-### 3. 그리퍼 제어 (ROS2 서비스/토픽)
-
-bringup.launch.py 실행 시 그리퍼 서비스 노드가 자동으로 시작됩니다.
+### 2. cuRobo planner 실행
 
 ```bash
-# 그리퍼 열기
-ros2 service call /dsr01/gripper/open std_srvs/srv/Trigger
-
-# 그리퍼 닫기
-ros2 service call /dsr01/gripper/close std_srvs/srv/Trigger
-
-# 특정 위치로 이동 (0=열림, 700=닫힘)
-ros2 topic pub /dsr01/gripper/position_cmd std_msgs/msg/Int32 "{data: 350}" --once
+ros2 run e0509_gripper_description curobo_planner_node.py
 ```
 
-### 4. 그리퍼 통신 사양
-| 항목 | 값 |
-|------|-----|
-| 프로토콜 | Modbus RTU |
-| 통신 포트 | Tool Flange Serial |
-| Baudrate | 57600 |
-| Data bits | 8 |
-| Parity | None |
-| Stop bits | 1 |
-| Slave ID | 1 |
+planner 시작 시 다음 로그를 확인합니다.
 
-### 5. 주요 Modbus 레지스터
-| 레지스터 | 주소 | 설명 |
-|---------|------|------|
-| Torque Enable | 256 (0x0100) | 1=활성화 |
-| Goal Position | 282 (0x011A) | 0~700 (2 registers) |
-| Goal Current | 275 (0x0113) | 기본값 400 |
-
----
-
-## 사용법 (Gazebo 시뮬레이션)
-
-### 1. Gazebo 시각화 실행
-이 모드에서는 ros2_control 토픽으로만 제어 가능합니다. (Doosan 서비스 사용 불가)
-```bash
-ros2 launch e0509_gripper_description gazebo.launch.py
+```text
+cuRobo Planner Ready!
+place slots loaded: .../config/place_slots.yaml
 ```
 
-### 2. 로봇 제어
-```bash
-ros2 topic pub --once /e0509_gripper/joint_trajectory_controller/joint_trajectory trajectory_msgs/msg/JointTrajectory "{
-  joint_names: [joint_1, joint_2, joint_3, joint_4, joint_5, joint_6],
-  points: [{positions: [0.5, 0.3, 0.3, 0.0, 0.5, 0.0], time_from_start: {sec: 2}}]
-}"
-```
-
-### 3. 그리퍼 제어
-```bash
-# 그리퍼 열기
-ros2 topic pub --once /e0509_gripper/gripper_controller/commands std_msgs/msg/Float64MultiArray "{data: [0.0, 0.0, 0.0, 0.0]}"
-
-# 그리퍼 닫기
-ros2 topic pub --once /e0509_gripper/gripper_controller/commands std_msgs/msg/Float64MultiArray "{data: [1.1, 1.1, 1.1, 1.1]}"
-```
-
-### 4. Gazebo + Virtual Robot 실행
-```bash
-ros2 launch e0509_gripper_description bringup_gazebo.launch.py mode:=virtual host:=127.0.0.1 port:=12346 name:=dsr01
-```
-
-RViz 함께 실행:
-```bash
-ros2 launch e0509_gripper_description bringup_gazebo.launch.py mode:=virtual host:=127.0.0.1 port:=12346 name:=dsr01 gui:=true
-```
-
----
-
-## 그리퍼 제어 인터페이스
-
-### RViz + Virtual Robot + Real Robot
-| 인터페이스 | 타입 | 설명 |
-|-----------|------|------|
-| `/dsr01/gripper/open` | Service (Trigger) | 그리퍼 열기 |
-| `/dsr01/gripper/close` | Service (Trigger) | 그리퍼 닫기 |
-| `/dsr01/gripper/position_cmd` | Topic (Int32) | 위치 명령 (0~700) |
-| `/dsr01/gripper/stroke` | Topic (Int32) | 현재 stroke 발행 (RViz용) |
-
-### Gazebo Simulation
-| 인터페이스 | 타입 | 설명 |
-|-----------|------|------|
-| `/dsr01/gripper_controller/commands` | Topic (Float64MultiArray) | Joint position (0.0~1.1) |
-
----
-
-## Digital Twin (실제 로봇 + Gazebo 동기화)
-
-**실제 로봇**과 **Gazebo**를 동기화하여 디지털 트윈을 구현합니다.
-실제 로봇을 제어하면 Gazebo의 로봇이 동일하게 따라갑니다.
-
-### 특징
-- 실제 로봇 <-> Gazebo 실시간 동기화
-- 로봇팔 + 그리퍼 모두 지원 (10축)
-- 한 번의 launch로 모든 것 실행
-
-### 실행 방법
+### 3. YOLO 딸기 인식 노드 실행
 
 ```bash
-ros2 launch e0509_gripper_description bringup_real_gazebo.launch.py mode:=real host:=<robot_ip> rviz:=false
+ros2 run e0509_gripper_description strawberry_yolo_node.py
 ```
 
-> RViz도 함께 보려면 `rviz:=true` (기본값)
+YOLO 창 키 조작:
 
-### 로봇 제어
-
-```bash
-# 조인트 이동 (단위: degree)
-ros2 service call /dsr01/motion/move_joint dsr_msgs2/srv/MoveJoint "{pos: [0.0, 0.0, 90.0, 0.0, 90.0, 0.0], vel: 30.0, acc: 30.0, time: 0.0, radius: 0.0, mode: 0, blend_type: 0, sync_type: 0}"
-
-# 그리퍼 열기
-ros2 service call /dsr01/gripper/open std_srvs/srv/Trigger
-
-# 그리퍼 닫기
-ros2 service call /dsr01/gripper/close std_srvs/srv/Trigger
-```
-
-### 동작 원리
-```
-[실제 로봇] → [/dsr01/joint_states] → [gazebo_bridge.py] → [Gazebo Controllers]
-```
-
-### Launch 파라미터
-| 파라미터 | 기본값 | 설명 |
-|---------|--------|------|
-| `host` | 192.168.137.100 | 로봇 IP 주소 |
-| `mode` | real | real 또는 virtual |
-| `rviz` | true | RViz 실행 여부 |
-| `gazebo_ns` | gz | Gazebo 네임스페이스 |
-
----
-
-## Digital Twin (실제 로봇 + Isaac Sim + RViz 동기화)
-
-**실제 로봇**, **RViz**, **Isaac Sim** 세 곳에서 로봇을 동시에 동기화하여 제어합니다.
-로봇팔(6축)과 그리퍼(4축)가 모두 동기화됩니다.
-
-### 특징
-- 실제 로봇 <-> RViz <-> Isaac Sim 실시간 동기화
-- 로봇팔 + 그리퍼 모두 지원 (10축)
-- ROS2와 Isaac Sim의 Python 버전이 달라도 동작 (파일 기반 통신)
-
-### 전체 실행 방법
-
-**터미널 1: 실제 로봇 Bringup**
-```bash
-ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=<robot_ip>
-```
-> Virtual 모드의 경우: `mode:=virtual`
-
-**터미널 2: ROS2 Bridge 실행**
-```bash
-cd ~/IsaacLab/pen_grasp_rl/scripts
-python3 digital_twin_bridge.py
-```
-> Bridge는 arm + gripper 조인트를 누적 저장하여 10축 모두 동기화합니다.
-
-**터미널 3: Isaac Sim 디지털 트윈** (CoWriteBotRL 레포 필요)
-[CoWriteBotRL](https://github.com/KERNEL3-2/CoWriteBotRL)
-```bash
-source ~/isaacsim_env/bin/activate
-cd ~/IsaacLab
-python pen_grasp_rl/scripts/digital_twin.py
-```
-
-**터미널 4: 로봇 제어 테스트**
-```bash
-# 로봇팔 이동 (도 단위)
-ros2 service call /dsr01/motion/move_joint dsr_msgs2/srv/MoveJoint "{pos: [0.0, 0.0, 90.0, 0.0, 90.0, 0.0], vel: 30.0, acc: 30.0}"
-
-# 그리퍼 열기
-ros2 service call /dsr01/gripper/open std_srvs/srv/Trigger
-
-# 그리퍼 닫기
-ros2 service call /dsr01/gripper/close std_srvs/srv/Trigger
-
-# 그리퍼 특정 위치 (0=열림, 700=닫힘)
-ros2 topic pub /dsr01/gripper/position_cmd std_msgs/msg/Int32 "{data: 350}" --once
-```
-
-### 동작 원리
-```
-[실제 로봇/에뮬레이터] → [ROS2 joint_states 토픽]
-                              ↓
-                    [digital_twin_bridge.py]
-                              ↓
-                    [/tmp/doosan_joint_states.json]
-                              ↓
-                    [digital_twin.py (Isaac Sim)]
-```
-
----
-
-## cuRobo 비전 기반 로봇 제어
-
-cuRobo (NVIDIA GPU 가속 모션 플래너) + Grounding DINO (제로샷 물체 인식) + RealSense depth로
-물체를 인식하고 충돌 회피 경로를 생성하여 자동으로 물체를 잡습니다.
-
-### 시스템 구성
-```
-[RealSense D455F] → Grounding DINO (제로샷 물체 인식)
-        ↓                    ↓
-[depth 기반 3D 좌표]   [3D PCA → 물체 방향]
-        ↓                    ↓
-[캘리브레이션 변환] → 로봇 좌표 + 그리퍼 각도
-        ↓
-[cuRobo Planner] → GPU 가속 충돌 회피 경로 (~70ms)
-        ↓
-[Doosan E0509] → 이동 + Pick (접근→열기→하강→잡기→들기)
-```
-
-### 사전 준비
-
-1. **CUDA Toolkit 12.8 + cuRobo 설치**
-```bash
-sudo apt install cuda-toolkit-12-8
-cd ~ && git clone https://github.com/NVlabs/curobo.git && cd curobo
-pip install ninja && export CUDA_HOME=/usr/local/cuda-12.8 && pip install -e ".[dev]"
-```
-
-2. **Grounding DINO 설치**
-```bash
-pip install groundingdino-py
-pip install transformers==4.40.2  # 호환성
-```
-
-3. **모델 다운로드**
-```bash
-mkdir -p ~/models && cd ~/models
-wget -O groundingdino_swint_ogc.pth "https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth"
-```
-
-4. **캘리브레이션 완료** (아래 Eye-to-Hand Calibration 섹션 참조)
-
-### 실행 방법
-
-**터미널 1: 로봇 Bringup**
-```bash
-ros2 launch e0509_gripper_description bringup.launch.py \
-    mode:=real host:=<로봇IP> rt_host:=<로봇IP>
-```
-
-**터미널 2: cuRobo + 물체 인식 (한 번에 실행)**
-```bash
-ros2 launch e0509_gripper_description curobo_vision.launch.py
-```
-> cuRobo planner가 먼저 로딩되고 (JIT 컴파일 ~30초), 이후 Grounding DINO가 시작됩니다.
-
-**프롬프트 변경:**
-```bash
-ros2 launch e0509_gripper_description curobo_vision.launch.py \
-    prompt:="cup . bottle . pen"
-```
-
-### 조작법
 | 키 | 동작 |
-|----|------|
-| `1-9` | 감지된 물체 선택 + 잠금 (감지 멈춤, 주변 물체를 cuRobo 장애물로 등록) |
-| `r` | 잠금 해제 (감지 재개) |
-| `s` | 선택된 물체 위 15cm로 이동 (cuRobo 충돌 회피) |
-| `p` | Pick 시퀀스: 그리퍼 열기 → 하강 (cuRobo) → 잡기 → 들기 |
-| `w/x` | 그리퍼 각도 미세 조정 (±5°) |
+| --- | --- |
+| `1~9` | 후보 딸기 lock |
+| `s` | lock/선택된 딸기 pick target 전송 |
+| `a` | auto mode on/off |
+| `u` | unlock |
+| `h` | home 이동 |
+| `y/n/d/m` | 수동 결과 라벨 저장: success/fail/dropped/missed |
 | `q` | 종료 |
 
-### Pick 시퀀스 상세
-```
-'s' → cuRobo 접근 (물체 위 15cm, 주변 장애물 회피, 물체 방향에 맞게 그리퍼 회전)
-'p' →
-  1. 그리퍼 열기
-  2. cuRobo 하강 (물체 위 12cm, 장애물 회피)
-  3. 그리퍼 닫기
-  4. movel 직선 위로 들기 (15cm)
-```
+## ripe 후보 필터
 
-### 물체 방향 자동 감지
-- RealSense depth point cloud에서 **3D PCA**로 물체 장축 방향을 계산
-- 장축에 **수직으로 그리퍼를 자동 회전**하여 잡기 자세 결정
-- 카메라 각도와 무관하게 **로봇 XY 평면에서의 실제 물체 방향** 사용
+`strawberry_yolo_node.py`는 YOLO class와 bbox 내부 red ratio를 함께 사용합니다.
 
-### 주의사항
-- 재시작 시 이전 세션 종료 후 **10초 대기** 필요 (RT 포트 해제 대기)
-- 감지된 물체 중 **잠금한 물체를 제외한 나머지**가 cuRobo 장애물로 등록됨
-- GPU 메모리 약 4GB 필요 (cuRobo ~2GB + Grounding DINO ~2GB)
-
----
-
-## Eye-to-Hand Calibration
-
-카메라가 외부에 고정된 Eye-to-Hand 구조에서 카메라 → 로봇 베이스 변환 행렬을 계산합니다.
-
-> **참고**: 캘리브레이션 및 Sim2Real 실행 코드는 [sim2real 레포](https://github.com/fhekwn549/sim2real)로 이동했습니다.
-> 자세한 가이드는 [SIM2REAL_GUIDE.md](https://github.com/fhekwn549/sim2real/blob/main/sim2real/SIM2REAL_GUIDE.md)를 참조하세요.
-
-### 구조
-```
-[카메라 (고정)] ──(T_cam2base)──> [로봇 베이스]
-                                      ↑
-                              [TCP/그리퍼]
+```python
+RIPE_RED_RATIO_MIN = 0.35
+RIPE_STABLE_FRAMES = 6
 ```
 
-### 간단 실행
+현재 정책:
+
+- class가 `unripe`, `green`, `immature`이면 skip
+- class가 `ripe`, `mature`, unknown, 단일 `strawberry`여도 `red_ratio >= 0.35`를 만족해야 pick 후보
+- 6프레임 연속 통과해야 최종 후보로 표시
+
+## 계란판 place slot 티칭
+
+계란판 place pose는 다음 파일에 저장됩니다.
+
+```text
+config/place_slots.yaml
+```
+
+각 slot은 두 자세를 가집니다.
+
+- `above`: 계란판 구멍 위 안전 자세
+- `release`: gripper를 열어 딸기를 놓는 낮은 자세
+
+현재는 `slot0`만 저장되어 있습니다. 전체 계란판은 5x3 배열, 총 15개 slot이므로 추후 15개 slot 전체를 티칭해야 합니다.
+
+현재 place 흐름:
+
+```text
+retreat
+-> bin transfer / home 경유
+-> slot0 above
+-> slot0 release
+-> gripper open
+-> slot0 above retreat
+-> home
+```
+
+## 조인트 티칭 도구
+
+DART 없이 조인트를 조금씩 움직일 때 사용합니다.
+
 ```bash
-# 터미널 1: 로봇 연결
-ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=<robot_ip>
-
-# 터미널 2: 캘리브레이션 (sim2real 레포)
-cd ~/sim2real/sim2real
-python3 calibrate_eye_to_hand.py
+ros2 run e0509_gripper_description joint_jog_control.py
 ```
 
----
+키 조작:
 
-## 파일 구조
-```
-e0509_gripper_description/
-├── CMakeLists.txt
-├── package.xml
-├── README.md
-├── config/
-│   └── gz_controllers.yaml          # Gazebo 컨트롤러 설정
-├── urdf/
-│   └── e0509_with_gripper.urdf.xacro
-├── launch/
-│   ├── display.launch.py            # RViz 시각화
-│   ├── bringup.launch.py            # Virtual/Real 로봇 실행
-│   ├── bringup_gazebo.launch.py     # Gazebo + RViz 시뮬레이션
-│   ├── bringup_real_gazebo.launch.py # 실제로봇 + Gazebo 디지털트윈
-│   └── gazebo.launch.py             # Gazebo 전용
-├── include/
-│   └── e0509_gripper_description/
-│       └── modbus_rtu.hpp           # Modbus RTU 프로토콜 (CRC16, 프레임 생성)
-├── src/
-│   ├── gripper_service_node.cpp     # 그리퍼 ROS2 서비스 노드 (C++)
-│   ├── gripper_joint_publisher.cpp  # 통합 조인트 상태 발행 (C++, 50Hz)
-│   └── gazebo_bridge.cpp            # Gazebo 디지털트윈 브릿지 (C++, 50Hz)
-├── config/
-│   ├── gz_controllers.yaml          # Gazebo 컨트롤러 설정
-│   └── curobo/
-│       ├── e0509_gripper.urdf       # cuRobo용 클린 URDF
-│       ├── e0509_gripper.yml        # cuRobo 로봇 설정
-│       └── e0509_spheres.yml        # 충돌 구체 정의
-├── scripts/
-│   ├── curobo_planner_node.py       # cuRobo GPU 모션 플래너 노드
-│   ├── gripper.py                   # 실제 그리퍼 제어 CLI (Modbus RTU)
-│   ├── digital_twin_bridge.py       # Isaac Sim 연동용 ROS2 브릿지
-│   └── robot_slider_control.py      # TCP 슬라이더 제어 GUI
-└── rviz/
-    └── display.rviz
+| 키 | 동작 |
+| --- | --- |
+| `1~6` | 조인트 선택 |
+| `w/s` 또는 방향키 위/아래 | 선택 조인트를 step 각도만큼 이동 |
+| `a/d` 또는 방향키 좌/우 | step 각도 감소/증가 |
+| `g` | 조인트 6개 직접 입력 후 이동 |
+| `p` | 현재 조인트 출력 |
+| `q` | 종료 |
+
+현재 방식은 연속 jog가 아니라 **step 각도 기반 MoveJoint**입니다. 티칭용으로 더 안전하고, 원하는 관절 자세를 정확히 맞추기 쉽습니다.
+
+## place slot 저장 도구
+
+현재 로봇 자세를 계란판 slot pose로 저장합니다.
+
+```bash
+ros2 run e0509_gripper_description teach_place_slots.py
 ```
 
-> **Sim2Real 코드**: 캘리브레이션, 펜 감지, 정책 실행 코드는 [sim2real 레포](https://github.com/fhekwn549/sim2real)를 참조하세요.
+키 조작:
 
-## 환경
+| 키 | 동작 |
+| --- | --- |
+| `a` | 현재 자세를 `slot_i.above`로 저장 |
+| `r` | 현재 자세를 `slot_i.release`로 저장 |
+| `n` | 다음 slot |
+| `b` | 이전 slot |
+| `p` | 현재 joint deg와 Doosan TCP(posx) 출력 |
+| `w` | YAML 저장 |
+| `q` | 종료 |
 
-- Ubuntu 22.04
-- ROS2 Humble
-- Gazebo Fortress (Ignition Gazebo 6)
+`a`, `r`을 누르면 YAML도 자동 저장됩니다.
 
-## License
+## TCP 확인과 planner의 관계
 
-Apache-2.0
+`teach_place_slots.py`는 아래 Doosan 서비스를 사용합니다.
 
-## Author
+```text
+/dsr01/aux_control/get_current_posx
+```
 
-fhekwn549
+서비스 타입:
+
+```text
+dsr_msgs2/srv/GetCurrentPosx
+```
+
+이 서비스로 읽은 TCP(posx)는 DART 티치펜던트 TCP 값과 여러 자세에서 비교했을 때 약 0.1mm 수준으로 일치했습니다.
+
+역할 구분:
+
+- `teach_place_slots.py`: 현재 자세의 joint 값과 Doosan TCP(posx)를 기록하는 티칭 도구
+- `curobo_planner_node.py`: `place_slots.yaml`의 `joints_deg`를 읽어 실제 place 동작 실행
+- `posx`: 검증/기록용
+- `joints_deg`: 실제 place 실행용
+
+즉 TCP 확인 노드는 planner가 직접 motion planning에 쓰는 노드가 아니라, 계란판 pose를 정확히 저장하기 위한 보조 도구입니다.
+
+## 현재 한계 / TODO
+
+- 현재 place는 고정 joint pose 기반 실험 구조입니다.
+- 계란판 위치가 바뀌면 다시 티칭해야 합니다.
+- 산업용 구조로 가려면 ArUco, tray corner detection, fixture 등을 이용해 tray frame을 자동 추정해야 합니다.
+- 현재는 `slot0`만 티칭되어 있습니다.
+- 이미 놓은 딸기를 다음 place 때 피하는 occupied slot collision 관리는 아직 없습니다.
+- 벽 collision은 cuRobo world에 완전히 반영하지 않았습니다.
+- `retreat -> bin/place` 직행은 벽 충돌 위험이 있어 검증 전 사용하면 안 됩니다.
+- 일부 물리적으로 닿는 딸기도 고정 wall orientation 때문에 cuRobo IK_FAIL이 날 수 있습니다.
+- 실제 딸기 force/pressure 기반 파지 성공 판정은 아직 구현되지 않았습니다.
+
+## Git 관리 주의
+
+Git에 올리지 않는 것:
+
+```text
+logs/
+models/*.pt
+*.npz
+*.npy
+config/calibration/
+.env
+```
+
+모델 파일, 캘리브레이션 결과, 실험 로그, API key가 들어간 `.env`는 Git에 올리지 않습니다.
