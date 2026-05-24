@@ -1,0 +1,38 @@
+FROM nvcr.io/nvidia/pytorch:25.01-py3
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+    "lerobot[smolvla] @ git+https://github.com/huggingface/lerobot.git" \
+    pillow \
+    numpy \
+    "opencv-python-headless==4.11.0.86" \
+    && \
+    # 중요: lerobot 전이 의존성(rerun-sdk)이 numpy>=2를 강제해 cv2 ABI 충돌이 나므로 제거
+    pip uninstall -y rerun-sdk && \
+    # 중요: 마지막에 numpy/cv2를 재고정해 컨테이너 재생성 후에도 동일하게 유지
+    pip install --force-reinstall --no-cache-dir \
+    "numpy==1.26.0" \
+    "opencv-python-headless==4.11.0.86"
+
+RUN pip install --no-cache-dir \
+    fastapi \
+    "uvicorn[standard]" \
+    pydantic
+
+WORKDIR /app
+COPY smolvla/serve_smolvla.py .
+
+ENV MODEL_PATH=/models/vla-model
+ENV DEVICE=cuda:0
+ENV PORT=8000
+
+EXPOSE 8000
+
+CMD ["python", "serve_smolvla.py"]

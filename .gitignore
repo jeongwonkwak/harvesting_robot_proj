@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Model weights / caches (do NOT commit large binaries)
+*.pt
+*.onnx
+*.safetensors
+*.engine
+*.bin
+models/
+.cache/
+runs/
