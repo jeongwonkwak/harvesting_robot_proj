@@ -1,0 +1,80 @@
+# ───────────────────────────────
+# 모델 가중치 (용량 크므로 제외)
+# 배포용 루트 best.pt 만 Git LFS 로 포함
+# ───────────────────────────────
+*.pt
+!best.pt
+*.pth
+*.onnx
+*.engine
+
+# ───────────────────────────────
+# 데이터셋 이미지/라벨 (용량 크므로 제외)
+# 스크립트·configs·README만 포함
+# ───────────────────────────────
+datasets/raw/
+datasets/yolo/
+datasets/yolo_3folders/
+datasets/yolo_unified/images/
+datasets/yolo_unified/_label_*/
+datasets/yolo_unified_farm/images/
+datasets/yolo_unified_seg/images/
+datasets/yolo_stem_roi/images/
+
+# 라벨 분할 폴더는 split_dataset.py로 만든 절대경로 심볼릭 링크라 git에 안전하지 않음
+# labels/all/ 만 포함하고, train/val/test 는 split_dataset.py를 다시 실행해 재생성
+datasets/yolo_unified/labels/train/
+datasets/yolo_unified/labels/val/
+datasets/yolo_unified/labels/test/
+
+# 라벨 캐시 (학습 시 자동 생성)
+datasets/**/*.cache
+
+# ───────────────────────────────
+# 학습/추론 결과 (이미지·로그 모두 노이즈 많음)
+# ───────────────────────────────
+runs/detect/
+runs/autolabel_vis/
+runs/autolabel_3folders_vis/
+runs/autolabel_unified_vis/
+runs/compare/
+runs/realsense/
+runs/realsense_seg/
+
+# 학습 로그는 ANSI progress bar로 가득차 git에 부적합 (로컬에는 보존)
+# 깨끗한 metric은 share/<모델>/results.csv 에 보존됨
+runs/strawberry/*.log
+runs/strawberry/*.json
+
+# ───────────────────────────────
+# 압축 파일
+# ───────────────────────────────
+*.zip
+
+# ───────────────────────────────
+# yolo11m 캐시 (Ultralytics 모델 캐시)
+# ───────────────────────────────
+yolo11m/
+
+# ───────────────────────────────
+# share 폴더 (학습 결과 배포용 — weights 포함)
+# 차트 이미지·csv·README는 포함, 가중치만 제외
+# ───────────────────────────────
+share/*/weights/
+
+# ───────────────────────────────
+# 가상환경 / 캐시
+# ───────────────────────────────
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.ultralytics_cfg/
+*.cache
+
+# ───────────────────────────────
+# 임시 / IDE
+# ───────────────────────────────
+.DS_Store
+*.swp
+*.swo
