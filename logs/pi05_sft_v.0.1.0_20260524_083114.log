@@ -1,0 +1,177 @@
+[20260524_083114] config=/workspace/scripts/vla_sft_v.0.1.0.yaml epochs=2 steps=2012 batch=4 lr=5e-5
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+INFO 2026-05-24 08:31:19 ot_train.py:212 {'batch_size': 4,
+ 'checkpoint_path': None,
+ 'cudnn_deterministic': False,
+ 'dataset': {'episodes': None,
+             'image_transforms': {'enable': False,
+                                  'max_num_transforms': 3,
+                                  'random_order': False,
+                                  'tfs': {'affine': {'kwargs': {'degrees': [-5.0,
+                                                                            5.0],
+                                                                'translate': [0.05,
+                                                                              0.05]},
+                                                     'type': 'RandomAffine',
+                                                     'weight': 1.0},
+                                          'brightness': {'kwargs': {'brightness': [0.8,
+                                                                                   1.2]},
+                                                         'type': 'ColorJitter',
+                                                         'weight': 1.0},
+                                          'contrast': {'kwargs': {'contrast': [0.8,
+                                                                               1.2]},
+                                                       'type': 'ColorJitter',
+                                                       'weight': 1.0},
+                                          'hue': {'kwargs': {'hue': [-0.05,
+                                                                     0.05]},
+                                                  'type': 'ColorJitter',
+                                                  'weight': 1.0},
+                                          'saturation': {'kwargs': {'saturation': [0.5,
+                                                                                   1.5]},
+                                                         'type': 'ColorJitter',
+                                                         'weight': 1.0},
+                                          'sharpness': {'kwargs': {'sharpness': [0.5,
+                                                                                 1.5]},
+                                                        'type': 'SharpnessJitter',
+                                                        'weight': 1.0}}},
+             'repo_id': '/data/vla/fin/pi05_dataset_v1.0.0',
+             'return_uint8': False,
+             'revision': None,
+             'root': None,
+             'streaming': False,
+             'use_imagenet_stats': False,
+             'video_backend': 'torchcodec'},
+ 'env': None,
+ 'eval': {'batch_size': 16, 'n_episodes': 50, 'use_async_envs': True},
+ 'eval_freq': 20000,
+ 'job_name': 'pi05_sft_v.0.1.0',
+ 'log_freq': 50,
+ 'num_workers': 4,
+ 'optimizer': {'betas': [0.9, 0.95],
+               'eps': 1e-08,
+               'grad_clip_norm': 10.0,
+               'lr': 5e-05,
+               'type': 'adamw',
+               'weight_decay': 1e-10},
+ 'output_dir': '/models/ours/pi05_sft_v.0.1.0',
+ 'peft': {'full_training_modules': None,
+          'init_type': None,
+          'method_type': 'LORA',
+          'r': 16,
+          'target_modules': None},
+ 'persistent_workers': True,
+ 'policy': {'action_expert_variant': 'gemma_300m',
+            'action_feature_names': None,
+            'chunk_size': 50,
+            'compile_mode': 'max-autotune',
+            'compile_model': False,
+            'device': 'cuda',
+            'dtype': 'bfloat16',
+            'empty_cameras': 0,
+            'freeze_vision_encoder': True,
+            'gradient_checkpointing': True,
+            'image_resolution': [224, 224],
+            'input_features': {'observation.images.base_0_rgb': {'shape': [3,
+                                                                           224,
+                                                                           224],
+                                                                 'type': <FeatureType.VISUAL: 'VISUAL'>},
+                               'observation.images.left_wrist_0_rgb': {'shape': [3,
+                                                                                 224,
+                                                                                 224],
+                                                                       'type': <FeatureType.VISUAL: 'VISUAL'>},
+                               'observation.images.right_wrist_0_rgb': {'shape': [3,
+                                                                                  224,
+                                                                                  224],
+                                                                        'type': <FeatureType.VISUAL: 'VISUAL'>},
+                               'observation.state': {'shape': [32],
+                                                     'type': <FeatureType.STATE: 'STATE'>}},
+            'license': None,
+            'max_action_dim': 32,
+            'max_period': 4.0,
+            'max_state_dim': 32,
+            'min_period': 0.004,
+            'n_action_steps': 50,
+            'n_obs_steps': 1,
+            'normalization_mapping': {'ACTION': <NormalizationMode.QUANTILES: 'QUANTILES'>,
+                                      'STATE': <NormalizationMode.QUANTILES: 'QUANTILES'>,
+                                      'VISUAL': <NormalizationMode.IDENTITY: 'IDENTITY'>},
+            'num_inference_steps': 10,
+            'optimizer_betas': [0.9, 0.95],
+            'optimizer_eps': 1e-08,
+            'optimizer_grad_clip_norm': 10.0,
+            'optimizer_lr': 5e-05,
+            'optimizer_weight_decay': 1e-10,
+            'output_features': {'action': {'shape': [32],
+                                           'type': <FeatureType.ACTION: 'ACTION'>}},
+            'paligemma_variant': 'gemma_2b',
+            'pretrained_path': '/models/public/pi05_base',
+            'private': None,
+            'push_to_hub': False,
+            'relative_exclude_joints': ['gripper'],
+            'repo_id': None,
+            'rtc_config': None,
+            'scheduler_decay_lr': 2.5e-06,
+            'scheduler_decay_steps': 30000,
+            'scheduler_warmup_steps': 100,
+            'tags': None,
+            'time_sampling_beta_alpha': 1.5,
+            'time_sampling_beta_beta': 1.0,
+            'time_sampling_offset': 0.001,
+            'time_sampling_scale': 0.999,
+            'tokenizer_max_length': 200,
+            'train_expert_only': False,
+            'type': 'pi05',
+            'use_amp': False,
+            'use_peft': False,
+            'use_relative_actions': False},
+ 'prefetch_factor': 4,
+ 'rename_map': {'observation.images.camera1': 'observation.images.base_0_rgb'},
+ 'resume': False,
+ 'reward_model': None,
+ 'sample_weighting': None,
+ 'save_checkpoint': True,
+ 'save_freq': 200,
+ 'scheduler': {'decay_lr': 2.5e-06,
+               'num_decay_steps': 30000,
+               'num_warmup_steps': 100,
+               'peak_lr': 5e-05,
+               'type': 'cosine_decay_with_warmup'},
+ 'seed': 1000,
+ 'steps': 2012,
+ 'tolerance_s': 0.0001,
+ 'use_policy_training_preset': True,
+ 'wandb': {'add_tags': True,
+           'disable_artifact': False,
+           'enable': False,
+           'entity': None,
+           'mode': None,
+           'notes': None,
+           'project': 'lerobot',
+           'run_id': None}}
+INFO 2026-05-24 08:31:19 ot_train.py:220 Logs will be saved locally.
+INFO 2026-05-24 08:31:19 ot_train.py:236 Creating dataset
+INFO 2026-05-24 08:31:19 eo_utils.py:109 Using video codec: libsvtav1
+INFO 2026-05-24 08:31:19 ot_train.py:270 Creating policy
+INFO 2026-05-24 08:32:32 ing_pi05.py:599 Enabled gradient checkpointing for PI05Pytorch model
+WARNING 2026-05-24 08:32:33 ng_pi05.py:1098 Vision embedding key might need handling: paligemma_with_expert.paligemma.model.vision_tower.vision_model.embeddings.patch_embedding.bias
+WARNING 2026-05-24 08:32:33 ng_pi05.py:1098 Vision embedding key might need handling: paligemma_with_expert.paligemma.model.vision_tower.vision_model.embeddings.patch_embedding.weight
+INFO 2026-05-24 08:32:37 ot_train.py:285 Using PEFT! Wrapping model.
+INFO 2026-05-24 08:32:37 etrained.py:316 Wrapped pi05 with PEFT (LoraConfig)
+The tokenizer you are loading from '/models/public/pi05_base' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+INFO 2026-05-24 08:32:37 ot_train.py:347 Creating optimizer and scheduler
+INFO 2026-05-24 08:32:37 hedulers.py:111 Auto-scaling LR scheduler: num_training_steps (2012) < num_decay_steps (30000). Scaling warmup: 100 → 6, decay: 30000 → 2012 (scale factor: 0.067)
+INFO 2026-05-24 08:32:37 ot_train.py:374 Output dir: /models/ours/pi05_sft_v.0.1.0
+INFO 2026-05-24 08:32:37 ot_train.py:381 cfg.steps=2012 (2K)
+INFO 2026-05-24 08:32:37 ot_train.py:382 dataset.num_frames=4024 (4K)
+INFO 2026-05-24 08:32:37 ot_train.py:383 dataset.num_episodes=6
+INFO 2026-05-24 08:32:37 ot_train.py:386 Effective batch size: 4 x 1 = 4
+INFO 2026-05-24 08:32:37 ot_train.py:387 num_learnable_params=1287168 (1M)
+INFO 2026-05-24 08:32:37 ot_train.py:388 num_total_params=4144691984 (4B)
+The PI05 model is a direct port of the OpenPI implementation. 
+This implementation follows the original OpenPI structure for compatibility. 
+Original implementation: https://github.com/Physical-Intelligence/openpi
+Loading model from: /models/public/pi05_base
+✓ Loaded state dict from model.safetensors
+Remapped 812 state dict keys
+All keys loaded successfully!
+Training:   0%|          | 0/2012 [00:00<?, ?step/s]INFO 2026-05-24 08:32:37 ot_train.py:453 Start offline training on a fixed dataset, with effective batch size: 4
+Training:   0%|          | 1/2012 [00:04<2:26:56,  4.38s/step]Training:   0%|          | 2/2012 [00:06<1:44:00,  3.10s/step]Training:   0%|          | 3/2012 [00:08<1:30:22,  2.70s/step]Training:   0%|          | 4/2012 [00:11<1:24:06,  2.51s/step]Training:   0%|          | 5/2012 [00:13<1:20:29,  2.41s/step]Training:   0%|          | 6/2012 [00:15<1:18:13,  2.34s/step]Training:   0%|          | 7/2012 [00:17<1:16:53,  2.30s/step]Training:   0%|          | 8/2012 [00:19<1:15:56,  2.27s/step]Training:   0%|          | 9/2012 [00:22<1:15:13,  2.25s/step]Training:   0%|          | 10/2012 [00:24<1:14:49,  2.24s/step]Training:   1%|          | 11/2012 [00:26<1:14:33,  2.24s/step]Training:   1%|          | 12/2012 [00:28<1:14:23,  2.23s/step]Training:   1%|          | 13/2012 [00:31<1:14:21,  2.23s/step]Training:   1%|          | 14/2012 [00:33<1:14:16,  2.23s/step]Training:   1%|          | 15/2012 [00:35<1:14:12,  2.23s/step]Training:   1%|          | 16/2012 [00:37<1:14:12,  2.23s/step]Training:   1%|          | 17/2012 [00:39<1:14:09,  2.23s/step]Training:   1%|          | 18/2012 [00:42<1:14:08,  2.23s/step]Training:   1%|          | 19/2012 [00:44<1:14:12,  2.23s/step]Training:   1%|          | 20/2012 [00:46<1:14:15,  2.24s/step]Training:   1%|          | 21/2012 [00:48<1:14:10,  2.24s/step]Training:   1%|          | 22/2012 [00:51<1:14:06,  2.23s/step]Training:   1%|          | 23/2012 [00:53<1:14:07,  2.24s/step]Training:   1%|          | 24/2012 [00:55<1:14:08,  2.24s/step]Training:   1%|          | 25/2012 [00:57<1:13:58,  2.23s/step]Training:   1%|▏         | 26/2012 [01:00<1:13:50,  2.23s/step]Training:   1%|▏         | 27/2012 [01:02<1:14:00,  2.24s/step]Training:   1%|▏         | 28/2012 [01:04<1:13:54,  2.23s/step]Training:   1%|▏         | 29/2012 [01:06<1:13:30,  2.22s/step]Training:   1%|▏         | 30/2012 [01:08<1:13:13,  2.22s/step]Training:   2%|▏         | 31/2012 [01:11<1:13:01,  2.21s/step]Training:   2%|▏         | 32/2012 [01:13<1:12:57,  2.21s/step]Training:   2%|▏         | 33/2012 [01:15<1:12:50,  2.21s/step]Training:   2%|▏         | 34/2012 [01:17<1:12:46,  2.21s/step]Training:   2%|▏         | 35/2012 [01:19<1:12:45,  2.21s/step]

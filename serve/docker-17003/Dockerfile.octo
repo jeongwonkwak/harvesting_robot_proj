@@ -1,0 +1,54 @@
+FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
+        git \
+        curl \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf python3 /usr/bin/python
+
+# JAX + 생태계를 한 번에 설치해 jaxlib/ml_dtypes 버전을 일관되게 맞춤
+RUN pip install --no-cache-dir \
+    "jax[cuda12]" \
+    flax \
+    optax \
+    orbax-checkpoint \
+    distrax \
+    -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+
+# TensorFlow: tfp(distrax 의존) 최신 버전이 TF>=2.18 요구
+RUN pip install --no-cache-dir "tensorflow-cpu>=2.18"
+
+# dlimp (PyPI 없음, git 설치)
+RUN pip install --no-cache-dir \
+    "dlimp @ git+https://github.com/kvablack/dlimp.git"
+
+# Octo
+RUN pip install --no-cache-dir \
+    "octo @ git+https://github.com/octo-models/octo.git"
+
+RUN pip install --no-cache-dir \
+    fastapi \
+    "uvicorn[standard]" \
+    pydantic \
+    pillow \
+    numpy
+
+# TF/dlimp/octo 중 하나가 ml_dtypes를 다운그레이드할 수 있으므로 마지막에 강제 고정
+RUN pip install --no-cache-dir --upgrade "ml_dtypes>=0.5.0"
+
+WORKDIR /app
+COPY serve_octo.py .
+
+ENV MODEL_PATH=/models/vla-model
+ENV DEVICE=cuda:0
+ENV PORT=8000
+
+EXPOSE 8000
+
+CMD ["python", "serve_octo.py"]

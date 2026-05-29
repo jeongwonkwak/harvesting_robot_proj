@@ -1,0 +1,33 @@
+services:
+  vla-train:
+    build:
+      context: ..
+      dockerfile: train/Dockerfile.vla_train
+    image: vla-train:latest
+    container_name: vla-train
+    volumes:
+      - ../models/public:/models/public:ro
+      - ../models/ours:/models/ours
+      - ../data/vla:/data/vla
+      - ../outputs:/workspace/outputs
+      - ../logs:/logs
+      - ../train:/workspace/train
+      - ../scripts:/workspace/scripts
+      - ${HF_CACHE:-~/.cache/huggingface}:/root/.cache/huggingface
+    runtime: nvidia
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    command: ["sleep", "infinity"]
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_USER: ${HF_USER:-}
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

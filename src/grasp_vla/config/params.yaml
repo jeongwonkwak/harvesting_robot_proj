@@ -1,0 +1,25 @@
+grasp_pipeline:
+  ros__parameters:
+    # SmolVLA server (serve_smolvla.py in Docker)
+    smolvla_url: "http://192.168.50.79:16003"
+
+    # Language instruction sent to the model
+    instruction: "pick up the silver cylindrical connector"
+
+    # How to interpret the 6-DoF action output from SmolVLA
+    #   cartesian – delta EEF pose [dx,dy,dz,drx,dry,drz]  (m, rad → scaled to mm, deg)
+    #   joint     – delta joint positions [dJ1..dJ6]         (rad → scaled to deg)
+    action_mode: "cartesian"
+
+    # VLA episode parameters
+    max_steps:    50    # maximum action steps before giving up
+    close_at_step: 35   # close gripper after this many steps
+    step_hz:       5.0  # control loop frequency (Hz)
+
+    # Hardware
+    gripper_port: "/dev/ttyUSB0"   # serial port for RH-P12-RN-DF
+    robot_id:     "dsr01"          # Doosan robot namespace
+
+    # Optional: pre-grasp home joint pose in degrees (empty = skip)
+    # Example for Doosan e0509:  [0.0, -45.0, 90.0, 0.0, 45.0, 0.0]
+    home_pose: []

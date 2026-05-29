@@ -1,0 +1,37 @@
+FROM nvcr.io/nvidia/pytorch:25.01-py3
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+    "transformers>=4.40.1,<4.50" \
+    "timm>=0.9.10,<1.0.0" \
+    tokenizers \
+    accelerate \
+    pillow \
+    numpy
+
+RUN pip install --no-cache-dir \
+    fastapi \
+    "uvicorn[standard]" \
+    pydantic
+
+RUN pip install --no-cache-dir packaging ninja && \
+    pip install flash-attn --no-build-isolation || \
+    echo "[WARNING] flash-attn build failed — server will use eager attention"
+
+WORKDIR /app
+COPY serve_openvla.py .
+
+ENV MODEL_PATH=/models/vla-model
+ENV DEVICE=cuda:0
+ENV PORT=8000
+
+EXPOSE 8000
+
+CMD ["python", "serve_openvla.py"]

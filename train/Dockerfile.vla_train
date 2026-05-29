@@ -1,0 +1,29 @@
+FROM nvcr.io/nvidia/pytorch:25.01-py3
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        libgl1 \
+        libglib2.0-0 \
+        ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install lerobot with smolvla + pi extras from local source (copied at build time)
+WORKDIR /workspace
+COPY lerobot/ /workspace/lerobot/
+RUN pip install --no-cache-dir -e "/workspace/lerobot[smolvla,pi,dataset]" && \
+    pip install --no-cache-dir wandb peft
+
+# flash_attn 제거: nvcr.io/nvidia/pytorch:25.01-py3 (PyTorch 2.10+cu128) 와 ABI 불일치
+RUN pip uninstall -y flash-attn || true
+
+RUN mkdir -p /workspace/outputs /datasets
+
+COPY train/train_entrypoint.sh /train_entrypoint.sh
+RUN chmod +x /train_entrypoint.sh
+
+WORKDIR /workspace/train
+
+ENTRYPOINT ["/train_entrypoint.sh"]
+CMD ["--help"]

@@ -1,0 +1,187 @@
+[20260513_095611] config=/workspace/scripts/smolvla_sft_v.0.1.0.yaml epochs=3 steps=141 batch=32 lr=1e-4
+INFO 2026-05-13 09:56:16 ot_train.py:212 {'batch_size': 32,
+ 'checkpoint_path': None,
+ 'cudnn_deterministic': False,
+ 'dataset': {'episodes': None,
+             'image_transforms': {'enable': False,
+                                  'max_num_transforms': 3,
+                                  'random_order': False,
+                                  'tfs': {'affine': {'kwargs': {'degrees': [-5.0,
+                                                                            5.0],
+                                                                'translate': [0.05,
+                                                                              0.05]},
+                                                     'type': 'RandomAffine',
+                                                     'weight': 1.0},
+                                          'brightness': {'kwargs': {'brightness': [0.8,
+                                                                                   1.2]},
+                                                         'type': 'ColorJitter',
+                                                         'weight': 1.0},
+                                          'contrast': {'kwargs': {'contrast': [0.8,
+                                                                               1.2]},
+                                                       'type': 'ColorJitter',
+                                                       'weight': 1.0},
+                                          'hue': {'kwargs': {'hue': [-0.05,
+                                                                     0.05]},
+                                                  'type': 'ColorJitter',
+                                                  'weight': 1.0},
+                                          'saturation': {'kwargs': {'saturation': [0.5,
+                                                                                   1.5]},
+                                                         'type': 'ColorJitter',
+                                                         'weight': 1.0},
+                                          'sharpness': {'kwargs': {'sharpness': [0.5,
+                                                                                 1.5]},
+                                                        'type': 'SharpnessJitter',
+                                                        'weight': 1.0}}},
+             'repo_id': '/data/vla/fin/smolvla_sft_dataset_v.0.1.0',
+             'return_uint8': False,
+             'revision': None,
+             'root': None,
+             'streaming': False,
+             'use_imagenet_stats': False,
+             'video_backend': 'torchcodec'},
+ 'env': None,
+ 'eval': {'batch_size': 16, 'n_episodes': 50, 'use_async_envs': True},
+ 'eval_freq': 20000,
+ 'job_name': 'smolvla_sft_v.0.1.0',
+ 'log_freq': 10,
+ 'num_workers': 4,
+ 'optimizer': {'betas': [0.9, 0.95],
+               'eps': 1e-08,
+               'grad_clip_norm': 10.0,
+               'lr': 0.0001,
+               'type': 'adamw',
+               'weight_decay': 1e-10},
+ 'output_dir': '/models/ours/smolvla_sft_v.0.1.0',
+ 'peft': None,
+ 'persistent_workers': True,
+ 'policy': {'adapt_to_pi_aloha': False,
+            'add_image_special_tokens': False,
+            'attention_mode': 'cross_attn',
+            'chunk_size': 50,
+            'compile_mode': 'max-autotune',
+            'compile_model': False,
+            'device': 'cuda',
+            'empty_cameras': 0,
+            'expert_width_multiplier': 0.75,
+            'freeze_vision_encoder': True,
+            'input_features': {'observation.images.camera1': {'shape': [3,
+                                                                        256,
+                                                                        256],
+                                                              'type': <FeatureType.VISUAL: 'VISUAL'>},
+                               'observation.images.camera2': {'shape': [3,
+                                                                        256,
+                                                                        256],
+                                                              'type': <FeatureType.VISUAL: 'VISUAL'>},
+                               'observation.images.camera3': {'shape': [3,
+                                                                        256,
+                                                                        256],
+                                                              'type': <FeatureType.VISUAL: 'VISUAL'>},
+                               'observation.state': {'shape': [6],
+                                                     'type': <FeatureType.STATE: 'STATE'>}},
+            'license': None,
+            'load_vlm_weights': True,
+            'max_action_dim': 32,
+            'max_period': 4.0,
+            'max_state_dim': 32,
+            'min_period': 0.004,
+            'n_action_steps': 50,
+            'n_obs_steps': 1,
+            'normalization_mapping': {'ACTION': <NormalizationMode.MEAN_STD: 'MEAN_STD'>,
+                                      'STATE': <NormalizationMode.MEAN_STD: 'MEAN_STD'>,
+                                      'VISUAL': <NormalizationMode.IDENTITY: 'IDENTITY'>},
+            'num_expert_layers': 0,
+            'num_steps': 10,
+            'num_vlm_layers': 16,
+            'optimizer_betas': [0.9, 0.95],
+            'optimizer_eps': 1e-08,
+            'optimizer_grad_clip_norm': 10.0,
+            'optimizer_lr': 0.0001,
+            'optimizer_weight_decay': 1e-10,
+            'output_features': {'action': {'shape': [6],
+                                           'type': <FeatureType.ACTION: 'ACTION'>}},
+            'pad_language_to': 'max_length',
+            'prefix_length': 0,
+            'pretrained_path': '/models/smolvla_base',
+            'private': None,
+            'push_to_hub': False,
+            'repo_id': None,
+            'resize_imgs_with_padding': [512, 512],
+            'rtc_config': None,
+            'scheduler_decay_lr': 2.5e-06,
+            'scheduler_decay_steps': 30000,
+            'scheduler_warmup_steps': 1000,
+            'self_attn_every_n_layers': 2,
+            'tags': None,
+            'tokenizer_max_length': 48,
+            'train_expert_only': True,
+            'train_state_proj': True,
+            'type': 'smolvla',
+            'use_amp': False,
+            'use_cache': True,
+            'use_delta_joint_actions_aloha': False,
+            'use_peft': False,
+            'vlm_model_name': 'HuggingFaceTB/SmolVLM2-500M-Video-Instruct'},
+ 'prefetch_factor': 4,
+ 'rename_map': {},
+ 'resume': False,
+ 'reward_model': None,
+ 'sample_weighting': None,
+ 'save_checkpoint': True,
+ 'save_freq': 30,
+ 'scheduler': {'decay_lr': 2.5e-06,
+               'num_decay_steps': 30000,
+               'num_warmup_steps': 1000,
+               'peak_lr': 0.0001,
+               'type': 'cosine_decay_with_warmup'},
+ 'seed': 1000,
+ 'steps': 141,
+ 'tolerance_s': 0.0001,
+ 'use_policy_training_preset': True,
+ 'wandb': {'add_tags': True,
+           'disable_artifact': False,
+           'enable': False,
+           'entity': None,
+           'mode': None,
+           'notes': None,
+           'project': 'lerobot',
+           'run_id': None}}
+INFO 2026-05-13 09:56:16 ot_train.py:220 Logs will be saved locally.
+INFO 2026-05-13 09:56:16 ot_train.py:236 Creating dataset
+INFO 2026-05-13 09:56:16 eo_utils.py:109 Using video codec: libsvtav1
+INFO 2026-05-13 09:56:16 ot_train.py:270 Creating policy
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading  HuggingFaceTB/SmolVLM2-500M-Video-Instruct weights ...
+Loading weights:   0%|          | 0/489 [00:00<?, ?it/s]Loading weights: 100%|██████████| 489/489 [00:00<00:00, 5837.58it/s]
+INFO 2026-05-13 09:56:26 ot_train.py:347 Creating optimizer and scheduler
+INFO 2026-05-13 09:56:26 hedulers.py:111 Auto-scaling LR scheduler: num_training_steps (141) < num_decay_steps (30000). Scaling warmup: 1000 → 4, decay: 30000 → 141 (scale factor: 0.005)
+INFO 2026-05-13 09:56:26 ot_train.py:374 Output dir: /models/ours/smolvla_sft_v.0.1.0
+INFO 2026-05-13 09:56:26 ot_train.py:381 cfg.steps=141 (141)
+INFO 2026-05-13 09:56:26 ot_train.py:382 dataset.num_frames=1500 (2K)
+INFO 2026-05-13 09:56:26 ot_train.py:383 dataset.num_episodes=5
+INFO 2026-05-13 09:56:26 ot_train.py:386 Effective batch size: 32 x 1 = 32
+INFO 2026-05-13 09:56:26 ot_train.py:387 num_learnable_params=99880992 (100M)
+INFO 2026-05-13 09:56:26 ot_train.py:388 num_total_params=450046176 (450M)
+Reducing the number of VLM layers to 16 ...
+Loading weights from local directory
+Training:   0%|          | 0/141 [00:00<?, ?step/s]INFO 2026-05-13 09:56:26 ot_train.py:453 Start offline training on a fixed dataset, with effective batch size: 32
+Training:   1%|          | 1/141 [00:02<06:17,  2.69s/step]Training:   1%|▏         | 2/141 [00:03<03:05,  1.34s/step]Training:   2%|▏         | 3/141 [00:03<02:14,  1.03step/s]Training:   3%|▎         | 4/141 [00:04<01:43,  1.33step/s]Training:   4%|▎         | 5/141 [00:04<01:30,  1.51step/s]Training:   4%|▍         | 6/141 [00:04<01:19,  1.70step/s]Training:   5%|▍         | 7/141 [00:05<01:14,  1.81step/s]Training:   6%|▌         | 8/141 [00:05<01:09,  1.90step/s]Training:   6%|▋         | 9/141 [00:06<01:07,  1.96step/s]Training:   7%|▋         | 10/141 [00:06<01:05,  2.01step/s]INFO 2026-05-13 09:56:33 ot_train.py:488 step:10 smpl:320 ep:1 epch:0.21 loss:0.610 grdn:6.332 lr:8.8e-05 updt_s:0.513 data_s:0.173
+Training:   8%|▊         | 11/141 [00:07<01:03,  2.05step/s]Training:   9%|▊         | 12/141 [00:07<01:02,  2.06step/s]Training:   9%|▉         | 13/141 [00:08<01:01,  2.10step/s]Training:  10%|▉         | 14/141 [00:08<01:00,  2.09step/s]Training:  11%|█         | 15/141 [00:09<01:00,  2.09step/s]Training:  11%|█▏        | 16/141 [00:09<01:00,  2.08step/s]Training:  12%|█▏        | 17/141 [00:10<00:58,  2.10step/s]Training:  13%|█▎        | 18/141 [00:10<00:58,  2.10step/s]Training:  13%|█▎        | 19/141 [00:11<00:57,  2.12step/s]Training:  14%|█▍        | 20/141 [00:11<00:57,  2.11step/s]INFO 2026-05-13 09:56:38 ot_train.py:488 step:20 smpl:640 ep:2 epch:0.43 loss:0.231 grdn:2.646 lr:9.7e-05 updt_s:0.465 data_s:0.006
+Training:  15%|█▍        | 21/141 [00:12<00:56,  2.13step/s]Training:  16%|█▌        | 22/141 [00:12<00:57,  2.08step/s]Training:  16%|█▋        | 23/141 [00:13<00:56,  2.10step/s]Training:  17%|█▋        | 24/141 [00:13<00:55,  2.10step/s]Training:  18%|█▊        | 25/141 [00:13<00:54,  2.11step/s]Training:  18%|█▊        | 26/141 [00:14<00:54,  2.12step/s]Training:  19%|█▉        | 27/141 [00:14<00:53,  2.12step/s]Training:  20%|█▉        | 28/141 [00:15<00:53,  2.12step/s]Training:  21%|██        | 29/141 [00:15<00:52,  2.13step/s]Training:  21%|██▏       | 30/141 [00:16<00:52,  2.12step/s]INFO 2026-05-13 09:56:43 ot_train.py:488 step:30 smpl:960 ep:3 epch:0.64 loss:0.153 grdn:1.889 lr:9.2e-05 updt_s:0.465 data_s:0.007
+INFO 2026-05-13 09:56:43 ot_train.py:502 Checkpoint policy after step 30
+Training:  22%|██▏       | 31/141 [00:18<01:35,  1.15step/s]Training:  23%|██▎       | 32/141 [00:18<01:21,  1.34step/s]Training:  23%|██▎       | 33/141 [00:19<01:13,  1.47step/s]Training:  24%|██▍       | 34/141 [00:19<01:05,  1.63step/s]Training:  25%|██▍       | 35/141 [00:20<01:02,  1.71step/s]Training:  26%|██▌       | 36/141 [00:20<00:57,  1.84step/s]Training:  26%|██▌       | 37/141 [00:21<00:55,  1.87step/s]Training:  27%|██▋       | 38/141 [00:21<00:52,  1.97step/s]Training:  28%|██▊       | 39/141 [00:22<00:52,  1.96step/s]Training:  28%|██▊       | 40/141 [00:22<00:49,  2.04step/s]INFO 2026-05-13 09:56:49 ot_train.py:488 step:40 smpl:1K ep:4 epch:0.85 loss:0.122 grdn:1.761 lr:8.5e-05 updt_s:0.462 data_s:0.006
+Training:  29%|██▉       | 41/141 [00:22<00:49,  2.02step/s]Training:  30%|██▉       | 42/141 [00:23<00:47,  2.08step/s]Training:  30%|███       | 43/141 [00:23<00:47,  2.05step/s]Training:  31%|███       | 44/141 [00:24<00:46,  2.10step/s]Training:  32%|███▏      | 45/141 [00:24<00:46,  2.07step/s]Training:  33%|███▎      | 46/141 [00:25<00:45,  2.11step/s]Training:  33%|███▎      | 47/141 [00:25<00:47,  1.99step/s]Training:  34%|███▍      | 48/141 [00:27<01:29,  1.03step/s]Training:  35%|███▍      | 49/141 [00:28<01:15,  1.22step/s]Training:  35%|███▌      | 50/141 [00:28<01:06,  1.38step/s]INFO 2026-05-13 09:56:55 ot_train.py:488 step:50 smpl:2K ep:5 epch:1.07 loss:0.107 grdn:1.933 lr:7.7e-05 updt_s:0.472 data_s:0.174
+Training:  36%|███▌      | 51/141 [00:29<01:07,  1.34step/s]Training:  37%|███▋      | 52/141 [00:30<00:59,  1.49step/s]Training:  38%|███▊      | 53/141 [00:30<00:54,  1.62step/s]Training:  38%|███▊      | 54/141 [00:31<00:50,  1.73step/s]Training:  39%|███▉      | 55/141 [00:31<00:47,  1.81step/s]Training:  40%|███▉      | 56/141 [00:32<00:45,  1.88step/s]Training:  40%|████      | 57/141 [00:32<00:43,  1.93step/s]Training:  41%|████      | 58/141 [00:33<00:41,  1.98step/s]Training:  42%|████▏     | 59/141 [00:33<00:41,  1.98step/s]Training:  43%|████▎     | 60/141 [00:34<00:40,  2.02step/s]INFO 2026-05-13 09:57:01 ot_train.py:488 step:60 smpl:2K ep:6 epch:1.28 loss:0.094 grdn:1.411 lr:6.7e-05 updt_s:0.468 data_s:0.048
+INFO 2026-05-13 09:57:01 ot_train.py:502 Checkpoint policy after step 60
+Training:  43%|████▎     | 61/141 [00:35<01:06,  1.21step/s]Training:  44%|████▍     | 62/141 [00:36<00:56,  1.39step/s]Training:  45%|████▍     | 63/141 [00:36<00:51,  1.51step/s]Training:  45%|████▌     | 64/141 [00:37<00:46,  1.66step/s]Training:  46%|████▌     | 65/141 [00:37<00:43,  1.74step/s]Training:  47%|████▋     | 66/141 [00:38<00:40,  1.84step/s]Training:  48%|████▊     | 67/141 [00:38<00:39,  1.88step/s]Training:  48%|████▊     | 68/141 [00:39<00:37,  1.95step/s]Training:  49%|████▉     | 69/141 [00:39<00:36,  1.96step/s]Training:  50%|████▉     | 70/141 [00:40<00:35,  2.02step/s]INFO 2026-05-13 09:57:06 ot_train.py:488 step:70 smpl:2K ep:7 epch:1.49 loss:0.118 grdn:1.403 lr:5.7e-05 updt_s:0.466 data_s:0.008
+Training:  50%|█████     | 71/141 [00:40<00:34,  2.01step/s]Training:  51%|█████     | 72/141 [00:41<00:33,  2.05step/s]Training:  52%|█████▏    | 73/141 [00:41<00:33,  2.03step/s]Training:  52%|█████▏    | 74/141 [00:42<00:32,  2.07step/s]Training:  53%|█████▎    | 75/141 [00:42<00:32,  2.05step/s]Training:  54%|█████▍    | 76/141 [00:42<00:31,  2.08step/s]Training:  55%|█████▍    | 77/141 [00:43<00:31,  2.06step/s]Training:  55%|█████▌    | 78/141 [00:43<00:30,  2.08step/s]Training:  56%|█████▌    | 79/141 [00:44<00:29,  2.07step/s]Training:  57%|█████▋    | 80/141 [00:44<00:29,  2.09step/s]INFO 2026-05-13 09:57:11 ot_train.py:488 step:80 smpl:3K ep:9 epch:1.71 loss:0.075 grdn:1.334 lr:4.6e-05 updt_s:0.474 data_s:0.007
+Training:  57%|█████▋    | 81/141 [00:45<00:28,  2.08step/s]Training:  58%|█████▊    | 82/141 [00:45<00:28,  2.09step/s]Training:  59%|█████▉    | 83/141 [00:46<00:27,  2.08step/s]Training:  60%|█████▉    | 84/141 [00:46<00:27,  2.09step/s]Training:  60%|██████    | 85/141 [00:47<00:26,  2.08step/s]Training:  61%|██████    | 86/141 [00:47<00:26,  2.08step/s]Training:  62%|██████▏   | 87/141 [00:48<00:25,  2.08step/s]Training:  62%|██████▏   | 88/141 [00:48<00:25,  2.08step/s]Training:  63%|██████▎   | 89/141 [00:49<00:25,  2.08step/s]Training:  64%|██████▍   | 90/141 [00:49<00:24,  2.08step/s]INFO 2026-05-13 09:57:16 ot_train.py:488 step:90 smpl:3K ep:10 epch:1.92 loss:0.080 grdn:0.970 lr:3.5e-05 updt_s:0.474 data_s:0.006
+INFO 2026-05-13 09:57:16 ot_train.py:502 Checkpoint policy after step 90
+Training:  65%|██████▍   | 91/141 [00:51<00:41,  1.19step/s]Training:  65%|██████▌   | 92/141 [00:51<00:36,  1.35step/s]Training:  66%|██████▌   | 93/141 [00:52<00:32,  1.49step/s]Training:  67%|██████▋   | 94/141 [00:52<00:27,  1.69step/s]Training:  67%|██████▋   | 95/141 [00:55<00:49,  1.07s/step]Training:  68%|██████▊   | 96/141 [00:55<00:40,  1.11step/s]Training:  69%|██████▉   | 97/141 [00:56<00:34,  1.28step/s]Training:  70%|██████▉   | 98/141 [00:56<00:32,  1.33step/s]Training:  70%|███████   | 99/141 [00:57<00:28,  1.47step/s]Training:  71%|███████   | 100/141 [00:57<00:25,  1.61step/s]INFO 2026-05-13 09:57:24 ot_train.py:488 step:100 smpl:3K ep:11 epch:2.13 loss:0.091 grdn:0.860 lr:2.6e-05 updt_s:0.452 data_s:0.216
+Training:  72%|███████▏  | 101/141 [00:58<00:23,  1.70step/s]Training:  72%|███████▏  | 102/141 [00:58<00:21,  1.80step/s]Training:  73%|███████▎  | 103/141 [00:59<00:20,  1.85step/s]Training:  74%|███████▍  | 104/141 [00:59<00:19,  1.91step/s]Training:  74%|███████▍  | 105/141 [01:00<00:18,  1.95step/s]Training:  75%|███████▌  | 106/141 [01:00<00:17,  1.97step/s]Training:  76%|███████▌  | 107/141 [01:01<00:16,  2.00step/s]Training:  77%|███████▋  | 108/141 [01:01<00:16,  2.01step/s]Training:  77%|███████▋  | 109/141 [01:02<00:15,  2.02step/s]Training:  78%|███████▊  | 110/141 [01:02<00:15,  2.02step/s]INFO 2026-05-13 09:57:29 ot_train.py:488 step:110 smpl:4K ep:12 epch:2.35 loss:0.080 grdn:0.677 lr:1.7e-05 updt_s:0.482 data_s:0.009
+Training:  79%|███████▊  | 111/141 [01:03<00:14,  2.04step/s]Training:  79%|███████▉  | 112/141 [01:03<00:14,  2.03step/s]Training:  80%|████████  | 113/141 [01:04<00:13,  2.05step/s]Training:  81%|████████  | 114/141 [01:04<00:13,  2.05step/s]Training:  82%|████████▏ | 115/141 [01:05<00:12,  2.06step/s]Training:  82%|████████▏ | 116/141 [01:05<00:12,  2.05step/s]Training:  83%|████████▎ | 117/141 [01:06<00:11,  2.04step/s]Training:  84%|████████▎ | 118/141 [01:06<00:11,  2.05step/s]Training:  84%|████████▍ | 119/141 [01:06<00:10,  2.06step/s]Training:  85%|████████▌ | 120/141 [01:07<00:10,  2.06step/s]INFO 2026-05-13 09:57:34 ot_train.py:488 step:120 smpl:4K ep:13 epch:2.56 loss:0.091 grdn:0.646 lr:1.0e-05 updt_s:0.476 data_s:0.008
+INFO 2026-05-13 09:57:34 ot_train.py:502 Checkpoint policy after step 120
+Training:  86%|████████▌ | 121/141 [01:09<00:18,  1.09step/s]Training:  87%|████████▋ | 122/141 [01:09<00:14,  1.27step/s]Training:  87%|████████▋ | 123/141 [01:10<00:12,  1.42step/s]Training:  88%|████████▊ | 124/141 [01:10<00:10,  1.56step/s]Training:  89%|████████▊ | 125/141 [01:11<00:09,  1.67step/s]Training:  89%|████████▉ | 126/141 [01:11<00:08,  1.77step/s]Training:  90%|█████████ | 127/141 [01:12<00:07,  1.84step/s]Training:  91%|█████████ | 128/141 [01:12<00:06,  1.91step/s]Training:  91%|█████████▏| 129/141 [01:13<00:06,  1.94step/s]Training:  92%|█████████▏| 130/141 [01:13<00:05,  1.98step/s]INFO 2026-05-13 09:57:40 ot_train.py:488 step:130 smpl:4K ep:14 epch:2.77 loss:0.086 grdn:0.620 lr:5.5e-06 updt_s:0.474 data_s:0.007
+Training:  93%|█████████▎| 131/141 [01:14<00:05,  1.99step/s]Training:  94%|█████████▎| 132/141 [01:14<00:04,  2.03step/s]Training:  94%|█████████▍| 133/141 [01:15<00:03,  2.02step/s]Training:  95%|█████████▌| 134/141 [01:15<00:03,  2.05step/s]Training:  96%|█████████▌| 135/141 [01:16<00:02,  2.03step/s]Training:  96%|█████████▋| 136/141 [01:16<00:02,  2.06step/s]Training:  97%|█████████▋| 137/141 [01:17<00:01,  2.04step/s]Training:  98%|█████████▊| 138/141 [01:17<00:01,  2.06step/s]Training:  99%|█████████▊| 139/141 [01:18<00:00,  2.05step/s]Training:  99%|█████████▉| 140/141 [01:18<00:00,  2.07step/s]INFO 2026-05-13 09:57:45 ot_train.py:488 step:140 smpl:4K ep:15 epch:2.99 loss:0.080 grdn:0.568 lr:3.0e-06 updt_s:0.478 data_s:0.006
+Training: 100%|██████████| 141/141 [01:19<00:00,  2.13step/s]INFO 2026-05-13 09:57:46 ot_train.py:502 Checkpoint policy after step 141
+Training: 100%|██████████| 141/141 [01:20<00:00,  1.75step/s]
+INFO 2026-05-13 09:57:47 ot_train.py:576 End of training

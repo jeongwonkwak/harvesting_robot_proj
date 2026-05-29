@@ -1,0 +1,96 @@
+{
+  "codebase_version": "v3.0",
+  "category": "",
+  "fps": 5,
+  "robot_type": "dsr01",
+  "total_episodes": 20,
+  "total_frames": 4409,
+  "total_tasks": 1,
+  "chunks_size": 1000,
+  "data_files_size_in_mb": 0.18,
+  "video_files_size_in_mb": 105.881,
+  "splits": {
+    "train": "0:20"
+  },
+  "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
+  "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
+  "features": {
+    "observation.images.camera1": {
+      "dtype": "video",
+      "shape": [
+        3,
+        480,
+        640
+      ],
+      "names": [
+        "channels",
+        "height",
+        "width"
+      ]
+    },
+    "observation.state": {
+      "dtype": "float32",
+      "shape": [
+        6
+      ],
+      "names": [
+        "x_m",
+        "y_m",
+        "z_m",
+        "rx_rad",
+        "ry_rad",
+        "rz_rad"
+      ]
+    },
+    "action": {
+      "dtype": "float32",
+      "shape": [
+        7
+      ],
+      "names": [
+        "dx_m",
+        "dy_m",
+        "dz_m",
+        "drx_rad",
+        "dry_rad",
+        "drz_rad",
+        "grip_next"
+      ]
+    },
+    "timestamp": {
+      "dtype": "float32",
+      "shape": [
+        1
+      ],
+      "names": null
+    },
+    "frame_index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null
+    },
+    "episode_index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null
+    },
+    "index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null
+    },
+    "task_index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null
+    }
+  }
+}

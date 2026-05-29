@@ -1,0 +1,29 @@
+FROM nvcr.io/nvidia/pytorch:25.01-py3
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+    "lerobot[pi]@git+https://github.com/huggingface/lerobot.git"
+
+RUN pip install --no-cache-dir \
+    fastapi \
+    "uvicorn[standard]" \
+    pydantic \
+    sentencepiece
+
+WORKDIR /app
+COPY serve_pi05.py .
+
+ENV MODEL_PATH=/models/vla-model
+ENV DEVICE=cuda:0
+ENV PORT=8003
+
+EXPOSE 8003
+
+CMD ["python", "serve_pi05.py"]

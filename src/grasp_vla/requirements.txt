@@ -1,0 +1,21 @@
+# Python dependencies for grasp_vla ROS2 package
+# Install with: pip install -r requirements.txt
+
+# HTTP client (SmolVLA server calls)
+requests>=2.31.0
+
+# Image processing
+Pillow>=10.0.0
+numpy>=1.24.0
+opencv-python>=4.8.0
+
+# Dynamixel SDK for RH-P12-RN-DF gripper
+# Install from: https://github.com/ROBOTIS-GIT/DynamixelSDK
+dynamixel-sdk>=3.7.51
+
+# ROS2 Python bridge (install via apt or rosdep, not pip)
+# ros-humble-cv-bridge
+# ros-humble-rclpy
+# ros-humble-sensor-msgs
+# ros-humble-geometry-msgs
+# ros-humble-dsr-msgs2   ← Doosan ROS2 messages

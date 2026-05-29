@@ -1,0 +1,57 @@
+FROM nvcr.io/nvidia/pytorch:25.01-py3
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+    "lerobot[smolvla] @ git+https://github.com/huggingface/lerobot.git" \
+    pillow \
+    numpy
+
+# Fix 1: attention_mask must be bool for torch.where (PyTorch version mismatch)
+RUN sed -i 's/attention_mask\[:, None, :, :\], att_weights/attention_mask[:, None, :, :].bool(), att_weights/' \
+    /usr/local/lib/python3.12/dist-packages/lerobot/policies/smolvla/smolvlm_with_expert.py
+
+# Fix 2: draccus.parse crashes on unknown "type" field, and config.pop("type") crashes when absent
+RUN python3 - <<'EOF'
+import re
+path = "/usr/local/lib/python3.12/dist-packages/lerobot/configs/policies.py"
+src = open(path).read()
+
+old = '        with draccus.config_type("json"):\n            orig_config = draccus.parse(cls, config_file, args=[])'
+new = (
+    '        import json as _json, tempfile as _tempfile\n'
+    '        with open(config_file) as _f:\n'
+    '            _cfg = _json.load(_f)\n'
+    '        _cfg.pop("type", None)\n'
+    '        with _tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as _tf:\n'
+    '            _json.dump(_cfg, _tf)\n'
+    '            _tmp = _tf.name\n'
+    '        with draccus.config_type("json"):\n'
+    '            orig_config = draccus.parse(cls, _tmp, args=[])'
+)
+src = src.replace(old, new)
+src = src.replace('config.pop("type")', 'config.pop("type", None)')
+open(path, "w").write(src)
+EOF
+
+RUN pip install --no-cache-dir \
+    fastapi \
+    "uvicorn[standard]" \
+    pydantic
+
+WORKDIR /app
+COPY serve_smolvla.py .
+
+ENV MODEL_PATH=/models/vla-model
+ENV DEVICE=cuda:0
+ENV PORT=8000
+
+EXPOSE 8000
+
+CMD ["python", "serve_smolvla.py"]

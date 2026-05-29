@@ -1,0 +1,37 @@
+services:
+  vla-server:
+    build:
+      context: .
+      dockerfile: ${DOCKERFILE:-Dockerfile.openvla}
+    image: ${MODEL_NAME:-vla-model}:latest
+    container_name: vla-server-17003
+    ports:
+      - "${HOST_PORT:-17003}:8001"
+    volumes:
+      - ${MODEL_HOST_PATH:-../../models/public/openvla-7b}:/models/vla-model:ro
+      - ${VLM_HOST_PATH:-../../models/public/SmolVLM2-500M-Video-Instruct}:/models/public/SmolVLM2-500M-Video-Instruct:ro
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    environment:
+      MODEL_PATH: /models/vla-model
+      MODEL_HOST_PATH: ${MODEL_HOST_PATH:-}
+      DEVICE: ${DEVICE:-cuda:0}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      PORT: "8001"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: cdi
+              device_ids:
+                - nvidia.com/gpu=all
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s

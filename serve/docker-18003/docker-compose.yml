@@ -1,0 +1,31 @@
+services:
+  pi05-server:
+    build:
+      context: .
+      dockerfile: ${DOCKERFILE:-Dockerfile.pi05}
+    image: ${MODEL_NAME:-pi05-model}:latest
+    container_name: vla-server-18003
+    ports:
+      - "${HOST_PORT:-18003}:8003"
+    volumes:
+      - ${MODEL_HOST_PATH:-../../models/public/pi05_base}:/models/vla-model:ro
+      - ./serve_pi05.py:/app/serve_pi05.py:ro
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    environment:
+      MODEL_PATH: /models/vla-model
+      MODEL_HOST_PATH: ${MODEL_HOST_PATH:-}
+      DEVICE: ${DEVICE:-cuda:0}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      PORT: "8003"
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    runtime: nvidia
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 240s
