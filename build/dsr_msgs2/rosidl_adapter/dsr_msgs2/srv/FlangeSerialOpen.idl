@@ -1,0 +1,23 @@
+// generated from rosidl_adapter/resource/srv.idl.em
+// with input from dsr_msgs2/srv/gripper/FlangeSerialOpen.srv
+// generated code does not contain a copyright notice
+
+
+module dsr_msgs2 {
+  module srv {
+    struct FlangeSerialOpen_Request {
+      int32 port;
+
+      int32 baudrate;
+
+      int32 bytesize;
+
+      int32 parity;
+
+      int32 stopbits;
+    };
+    struct FlangeSerialOpen_Response {
+      boolean success;
+    };
+  };
+};

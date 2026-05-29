@@ -1,0 +1,30 @@
+// generated from rosidl_adapter/resource/action.idl.em
+// with input from dsr_msgs2/action/MovejH2r.action
+// generated code does not contain a copyright notice
+
+
+module dsr_msgs2 {
+  module action {
+    typedef double double__6[6];
+    @verbatim (language="comment", text=
+      "Goal")
+    struct MovejH2r_Goal {
+      double__6 target_pos;
+
+      double__6 target_vel;
+
+      double__6 target_acc;
+    };
+    @verbatim (language="comment", text=
+      "Result")
+    struct MovejH2r_Result {
+      boolean success;
+    };
+    typedef double double__6[6];
+    @verbatim (language="comment", text=
+      "Feedback")
+    struct MovejH2r_Feedback {
+      double__6 pos;
+    };
+  };
+};

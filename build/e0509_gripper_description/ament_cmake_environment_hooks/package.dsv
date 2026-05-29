@@ -1,0 +1,4 @@
+source;share/e0509_gripper_description/local_setup.bash
+source;share/e0509_gripper_description/local_setup.dsv
+source;share/e0509_gripper_description/local_setup.sh
+source;share/e0509_gripper_description/local_setup.zsh

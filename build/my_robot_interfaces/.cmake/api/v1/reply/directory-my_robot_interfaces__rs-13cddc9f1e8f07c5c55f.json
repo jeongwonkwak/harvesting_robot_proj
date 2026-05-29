@@ -1,0 +1,14 @@
+{
+	"backtraceGraph" : 
+	{
+		"commands" : [],
+		"files" : [],
+		"nodes" : []
+	},
+	"installers" : [],
+	"paths" : 
+	{
+		"build" : "my_robot_interfaces__rs",
+		"source" : "/home/user/robot_workspace/doosan_ws/build/my_robot_interfaces/my_robot_interfaces__rs"
+	}
+}

@@ -1,0 +1,97 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"hasInstallRule" : true,
+					"jsonFile" : "directory-.-e5032977e748acf4323b.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.12"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4
+					]
+				}
+			],
+			"name" : "",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "e0509_gripper_description",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "e0509_gripper_description_uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-e0509_gripper_description_uninstall-dd9c0b5b8f4efde93ce1.json",
+					"name" : "e0509_gripper_description_uninstall",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "gazebo_bridge::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-gazebo_bridge-3cf19b16529e69ea9591.json",
+					"name" : "gazebo_bridge",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "gripper_joint_publisher::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-gripper_joint_publisher-69236b232fbdeb2ad03a.json",
+					"name" : "gripper_joint_publisher",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "gripper_service_node::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-gripper_service_node-a2939d6d9f761fdeeede.json",
+					"name" : "gripper_service_node",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-uninstall-527c6cbd18bcab773725.json",
+					"name" : "uninstall",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "/home/user/robot_workspace/doosan_ws/build/e0509_gripper_description",
+		"source" : "/home/user/robot_workspace/doosan_ws/src/e0509_gripper_description"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 3
+	}
+}

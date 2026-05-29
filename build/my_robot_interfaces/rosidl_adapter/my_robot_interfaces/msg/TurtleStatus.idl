@@ -1,0 +1,22 @@
+// generated from rosidl_adapter/resource/msg.idl.em
+// with input from my_robot_interfaces/msg/TurtleStatus.msg
+// generated code does not contain a copyright notice
+
+
+module my_robot_interfaces {
+  module msg {
+    struct TurtleStatus {
+      @verbatim (language="comment", text=
+        "벽까지의 남은 거리")
+      double distance_to_wall;
+
+      @verbatim (language="comment", text=
+        "로봇의 상태 (예: NORMAL, WARN, STOP)")
+      string current_state;
+
+      @verbatim (language="comment", text=
+        "이동 중 여부")
+      boolean is_moving;
+    };
+  };
+};

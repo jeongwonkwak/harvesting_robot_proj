@@ -1,0 +1,30 @@
+// generated from rosidl_adapter/resource/srv.idl.em
+// with input from dsr_msgs2/srv/system/GetRobotLinkInfo.srv
+// generated code does not contain a copyright notice
+
+
+module dsr_msgs2 {
+  module srv {
+    struct GetRobotLinkInfo_Request {
+      uint8 structure_needs_at_least_one_member;
+    };
+    typedef float float__6[6];
+    struct GetRobotLinkInfo_Response {
+      float__6 d;
+
+      float__6 a;
+
+      float__6 alpha;
+
+      float__6 theta;
+
+      float__6 offset;
+
+      float gradient;
+
+      float rotation;
+
+      boolean success;
+    };
+  };
+};

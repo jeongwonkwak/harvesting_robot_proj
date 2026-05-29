@@ -1,0 +1,1 @@
+ament_cmake_symlink_install_targets("TARGET_FILES" "/home/user/robot_workspace/doosan_ws/build/dsr_realtime_control/dsr_realtime_control" "TARGETS" "dsr_realtime_control" "DESTINATION" "lib/dsr_realtime_control")

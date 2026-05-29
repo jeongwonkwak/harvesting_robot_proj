@@ -1,0 +1,15 @@
+/home/user/robot_workspace/doosan_ws/install/rh_p12_rn_a/share/ament_index/resource_index/package_run_dependencies/rh_p12_rn_a
+/home/user/robot_workspace/doosan_ws/install/rh_p12_rn_a/share/ament_index/resource_index/parent_prefix_path/rh_p12_rn_a
+/home/user/robot_workspace/doosan_ws/install/rh_p12_rn_a/share/rh_p12_rn_a/environment/ament_prefix_path.sh
+/home/user/robot_workspace/doosan_ws/install/rh_p12_rn_a/share/rh_p12_rn_a/environment/ament_prefix_path.dsv
+/home/user/robot_workspace/doosan_ws/install/rh_p12_rn_a/share/rh_p12_rn_a/environment/path.sh
+/home/user/robot_workspace/doosan_ws/install/rh_p12_rn_a/share/rh_p12_rn_a/environment/path.dsv
+/home/user/robot_workspace/doosan_ws/install/rh_p12_rn_a/share/rh_p12_rn_a/local_setup.bash
+/home/user/robot_workspace/doosan_ws/install/rh_p12_rn_a/share/rh_p12_rn_a/local_setup.sh
+/home/user/robot_workspace/doosan_ws/install/rh_p12_rn_a/share/rh_p12_rn_a/local_setup.zsh
+/home/user/robot_workspace/doosan_ws/install/rh_p12_rn_a/share/rh_p12_rn_a/local_setup.dsv
+/home/user/robot_workspace/doosan_ws/install/rh_p12_rn_a/share/rh_p12_rn_a/package.dsv
+/home/user/robot_workspace/doosan_ws/install/rh_p12_rn_a/share/ament_index/resource_index/packages/rh_p12_rn_a
+/home/user/robot_workspace/doosan_ws/install/rh_p12_rn_a/share/rh_p12_rn_a/cmake/rh_p12_rn_aConfig.cmake
+/home/user/robot_workspace/doosan_ws/install/rh_p12_rn_a/share/rh_p12_rn_a/cmake/rh_p12_rn_aConfig-version.cmake
+/home/user/robot_workspace/doosan_ws/install/rh_p12_rn_a/share/rh_p12_rn_a/package.xml

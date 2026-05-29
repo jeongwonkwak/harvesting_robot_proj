@@ -1,0 +1,1 @@
+/home/user/robot_workspace/doosan_ws/src/doosan-robot2/dsr_tests/launch/dsr_bringup_without_spawner_test.launch.py

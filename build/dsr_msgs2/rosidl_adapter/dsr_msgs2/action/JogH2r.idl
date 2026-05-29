@@ -1,0 +1,29 @@
+// generated from rosidl_adapter/resource/action.idl.em
+// with input from dsr_msgs2/action/JogH2r.action
+// generated code does not contain a copyright notice
+
+
+module dsr_msgs2 {
+  module action {
+    @verbatim (language="comment", text=
+      "Goal")
+    struct JogH2r_Goal {
+      int8 jog_axis;
+
+      int8 move_reference;
+
+      double velocity;
+    };
+    @verbatim (language="comment", text=
+      "Result")
+    struct JogH2r_Result {
+      boolean success;
+    };
+    typedef double double__6[6];
+    @verbatim (language="comment", text=
+      "Feedback")
+    struct JogH2r_Feedback {
+      double__6 pos;
+    };
+  };
+};

@@ -1,0 +1,19 @@
+// generated from rosidl_adapter/resource/srv.idl.em
+// with input from my_robot_interfaces/srv/SetTurtleMode.srv
+// generated code does not contain a copyright notice
+
+
+module my_robot_interfaces {
+  module srv {
+    struct SetTurtleMode_Request {
+      string mode_name;
+
+      double target_speed;
+    };
+    struct SetTurtleMode_Response {
+      boolean success;
+
+      string message;
+    };
+  };
+};

@@ -1,0 +1,88 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"hasInstallRule" : true,
+					"jsonFile" : "directory-.-9af5aeddeabf1f66a87e.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.12"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3
+					]
+				}
+			],
+			"name" : "",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "dsr_controller2",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "dsr_controller2::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-dsr_controller2-b01a7fedcce0b357a670.json",
+					"name" : "dsr_controller2",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "dsr_controller2_uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-dsr_controller2_uninstall-218f6e416c43eadf0cf2.json",
+					"name" : "dsr_controller2_uninstall",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "dsr_joint_trajectory::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-dsr_joint_trajectory-d008af133710946aa3be.json",
+					"name" : "dsr_joint_trajectory",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-uninstall-e382c52f85675e313901.json",
+					"name" : "uninstall",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "/home/user/robot_workspace/doosan_ws/build/dsr_controller2",
+		"source" : "/home/user/robot_workspace/doosan_ws/src/doosan-robot2/dsr_controller2"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 3
+	}
+}

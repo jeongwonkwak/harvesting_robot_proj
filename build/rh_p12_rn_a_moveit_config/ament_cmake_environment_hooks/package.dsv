@@ -1,0 +1,4 @@
+source;share/rh_p12_rn_a_moveit_config/local_setup.bash
+source;share/rh_p12_rn_a_moveit_config/local_setup.dsv
+source;share/rh_p12_rn_a_moveit_config/local_setup.sh
+source;share/rh_p12_rn_a_moveit_config/local_setup.zsh

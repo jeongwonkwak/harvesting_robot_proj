@@ -1,0 +1,2 @@
+/home/user/robot_workspace/doosan_ws/build/my_robot_interfaces/rosidl_adapter/my_robot_interfaces:msg/TurtleStatus.idl
+/home/user/robot_workspace/doosan_ws/build/my_robot_interfaces/rosidl_adapter/my_robot_interfaces:srv/SetTurtleMode.idl

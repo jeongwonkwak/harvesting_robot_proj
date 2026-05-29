@@ -1,0 +1,15 @@
+// generated from rosidl_adapter/resource/srv.idl.em
+// with input from dsr_msgs2/srv/gripper/FlangeSerialClose.srv
+// generated code does not contain a copyright notice
+
+
+module dsr_msgs2 {
+  module srv {
+    struct FlangeSerialClose_Request {
+      int32 port;
+    };
+    struct FlangeSerialClose_Response {
+      boolean success;
+    };
+  };
+};

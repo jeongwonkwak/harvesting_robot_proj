@@ -1,0 +1,1 @@
+/home/user/robot_workspace/doosan_ws/src/doosan-robot2/dsr_example2/dsr_visualservoing/launch/dsr_bringup2_visual_servoing_gazebo.launch.py

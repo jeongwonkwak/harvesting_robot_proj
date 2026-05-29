@@ -1,0 +1,6 @@
+/home/user/robot_workspace/doosan_ws/install/dsr_controller2/lib/libdsr_controller2.so
+/home/user/robot_workspace/doosan_ws/install/dsr_controller2/lib/libdsr_joint_trajectory.so
+/home/user/robot_workspace/doosan_ws/install/dsr_controller2/share/dsr_controller2/cmake/export_dsr_controller2Export.cmake
+/home/user/robot_workspace/doosan_ws/install/dsr_controller2/share/dsr_controller2/cmake/export_dsr_controller2Export-noconfig.cmake
+/home/user/robot_workspace/doosan_ws/install/dsr_controller2/share/dsr_controller2/cmake/export_dsr_joint_trajectoryExport.cmake
+/home/user/robot_workspace/doosan_ws/install/dsr_controller2/share/dsr_controller2/cmake/export_dsr_joint_trajectoryExport-noconfig.cmake

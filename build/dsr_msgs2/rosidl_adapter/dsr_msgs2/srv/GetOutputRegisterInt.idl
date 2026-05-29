@@ -1,0 +1,19 @@
+// generated from rosidl_adapter/resource/srv.idl.em
+// with input from dsr_msgs2/srv/plc/GetOutputRegisterInt.srv
+// generated code does not contain a copyright notice
+
+
+module dsr_msgs2 {
+  module srv {
+    struct GetOutputRegisterInt_Request {
+      uint16 address;
+
+      uint32 timeout_ms;
+    };
+    struct GetOutputRegisterInt_Response {
+      boolean success;
+
+      int32 value;
+    };
+  };
+};

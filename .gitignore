@@ -1,0 +1,10 @@
+install/
+log/
+logs/
+data/
+models/
+*.egg-info/
+__pycache__/
+*.pyc
+*.o
+*.so
