@@ -1,8 +1,7 @@
-build/
+data/
 install/
 log/
 logs/
-data/
 models/
 *.egg-info/
 __pycache__/

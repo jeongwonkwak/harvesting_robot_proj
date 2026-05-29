@@ -1,0 +1,1 @@
+/home/user/robot_workspace/vla_ws/launch/strawberry_harvest.launch.py
