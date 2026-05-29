@@ -1,0 +1,20 @@
+services:
+  harvest-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: harvest-dashboard
+    network_mode: "host"
+    environment:
+      - HARVEST_STATE_FILE=/data/harvest_state.json
+      - CAMERA_ID=0       # 슬롯0: /dev/video0  (카메라 A)
+      - CAMERA_ID_1=1     # 슬롯1: /dev/video1  (카메라 B — 같은 기기 메타데이터 노드)
+      # RealSense 연결 시: CAMERA_ID=6, CAMERA_ID_1=0
+    volumes:
+      - ./data:/data
+    devices:
+      - /dev/video0:/dev/video0
+      - /dev/video1:/dev/video1
+      - /dev/bus/usb:/dev/bus/usb
+    privileged: true
+    restart: unless-stopped

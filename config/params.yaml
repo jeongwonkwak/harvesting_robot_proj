@@ -1,0 +1,34 @@
+data_collection:
+  ros__parameters:
+    # 에피소드 bag 파일 저장 경로 (절대경로 권장)
+    bag_save_path: "/home/user/robot_workspace/vla_ws/data/raw"
+
+grasp_pipeline:
+  ros__parameters:
+    # SmolVLA server (serve_smolvla.py in Docker)
+    smolvla_url: "http://192.168.50.79:16003"
+
+    # Language instruction sent to the model
+    instruction: "Approach the red object closely and pick it up."
+
+    # How to interpret the 6-DoF action output from SmolVLA
+    #   cartesian – delta EEF pose [dx,dy,dz,drx,dry,drz]  (m, rad → scaled to mm, deg)
+    #   joint     – delta joint positions [dJ1..dJ6]         (rad → scaled to deg)
+    action_mode: "cartesian"
+
+    # VLA episode parameters
+    max_steps:    30    # maximum action steps before giving up
+    step_hz:       10.0  # control loop frequency (Hz)
+
+    # Hardware
+    gripper_port: "/dev/ttyUSB0"   # serial port for RH-P12-RN-DF
+    robot_id:     "dsr01"          # Doosan robot namespace
+
+    # Optional: pre-grasp home joint pose in degrees (empty = skip)
+    # Example for Doosan e0509:  [0.0, -45.0, 90.0, 0.0, 45.0, 0.0]
+    home_pose: []
+
+    # Post-grasp retreat: delta [dX, dY, dZ, dRx, dRy, dRz] in mm/deg (base frame)
+    # -11 -5 -67 107 -2 9 기준 FK: TCP가 +Y 방향으로 벽을 바라봄
+    # → 후퇴 방향: Y=-137, Z=+61 (150mm 직선 후퇴)
+    retreat_delta: [0.0, -137.0, 61.0, 0.0, 0.0, 0.0]

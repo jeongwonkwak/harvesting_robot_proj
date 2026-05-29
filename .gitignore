@@ -1,0 +1,9 @@
+build/
+install/
+log/
+logs/
+data/
+models/
+*.egg-info/
+__pycache__/
+*.pyc
