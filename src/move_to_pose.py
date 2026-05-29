@@ -27,11 +27,11 @@ from grasp_vla.gripper_controller import GripperController
 # ── 여기만 수정하세요 ────────────────────────────────────────────────────────
 
 # 이동할 포즈 선택 (아래 POSES 딕셔너리의 키 중 하나)
-TARGET = 'top_left'
+TARGET = 'top_right'
 
-VELOCITY     = 15.0
-ACCELERATION = 30.0
-GRIPPER_POS  = 350   # 0=열림, 740=완전닫힘
+VELOCITY     = 3000
+ACCELERATION = 800
+GRIPPER_POS  = 600   # 0=열림, 740=완전닫힘
 
 # ── 포즈 정의 ────────────────────────────────────────────────────────────────
 #
@@ -112,7 +112,7 @@ def main():
         req.radius    = 0.0
         req.mode      = 0
         req.blend_type = 0
-        req.sync_type = 1
+        req.sync_type = 0  # 0=비동기(즉시 반환), 1=동작 완료까지 블로킹
         fut = robot._movej_cli.call_async(req)
     else:
         req = robot._movel_cli.srv_type.Request()
@@ -124,7 +124,7 @@ def main():
         req.ref       = 0      # base frame
         req.mode      = 0      # absolute
         req.blend_type = 0
-        req.sync_type = 1
+        req.sync_type = 0  # 0=비동기(즉시 반환), 1=동작 완료까지 블로킹
         fut = robot._movel_cli.call_async(req)
 
     done = robot._wait_future(fut, timeout_sec=30.0)

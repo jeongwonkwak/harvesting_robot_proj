@@ -33,10 +33,11 @@ DEFAULT_STATE: dict = {
     "failure_types":         {"ik":0,"obstacle":0,"grasp":0,"detection":0,"other":0},
     "detected_count":        0,
     "skip_reasons":          {"immature":0,"occluded":0,"harvested":0,"other":0},
-    "pending_joint_command": None,
-    "pending_tcp_command":   None,
-    "last_updated":          None,
-    "gripper":               {"position":100.0,"state":"open","force":30.0},
+    "pending_joint_command":  None,
+    "pending_tcp_command":    None,
+    "last_updated":           None,
+    "gripper":                {"position":100.0,"state":"open","force":30.0},
+    "planned_duration_hours": 0,
 }
 
 def _load() -> dict:
@@ -77,36 +78,67 @@ _cam_infos    = [{"source": "none", "label": "딸기 인식"},
 _cam_fps_v    = [0.0, 0.0]
 _cam_fps_lock = threading.Lock()
 
-def _camera_worker(camera_id: int = 0, slot: int = 0) -> None:
+def _camera_worker(camera_id: int = 0, slot: int = 0, serial: str = '',
+                    url: str = '') -> None:
+    """카메라 프레임 수집. url이 있으면 MJPEG URL에서 읽고, 없으면 USB 직접 접근."""
     try: import cv2
     except ImportError: print(f"[Camera{slot}] opencv not installed"); return
-    label  = _cam_infos[slot]["label"]
-    enc    = [cv2.IMWRITE_JPEG_QUALITY, 75]
+    label = _cam_infos[slot]["label"]
+    enc   = [cv2.IMWRITE_JPEG_QUALITY, 75]
+
+    # ── URL 소스 (ros2_bridge MJPEG 스트림) ──────────────────────────────────
+    if url:
+        print(f"[Camera{slot}] URL 소스 사용: {url}")
+        _cam_infos[slot]["source"] = f"bridge:{url}"
+        fc, ft = 0, time.time()
+        while True:
+            cap = None
+            try:
+                cap = cv2.VideoCapture(url)
+                if not cap.isOpened():
+                    raise RuntimeError("스트림 열기 실패")
+                while True:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    _, buf = cv2.imencode('.jpg', frame, enc)
+                    with _cam_locks[slot]: _cam_jpegs[slot] = buf.tobytes()
+                    fc += 1
+                    now = time.time()
+                    if now - ft >= 1.0:
+                        with _cam_fps_lock: _cam_fps_v[slot] = fc / (now - ft)
+                        fc, ft = 0, now
+            except Exception as e:
+                print(f"[Camera{slot}] URL 읽기 오류: {e}, 3s 후 재시도")
+            finally:
+                if cap: cap.release()
+            time.sleep(3)
+        return  # URL 모드에서는 여기까지만
+
+    # ── RealSense SDK 직접 접근 ───────────────────────────────────────────────
     pipeline = None
+    try:
+        import pyrealsense2 as rs, numpy as np
+        ctx = rs.context()
+        if len(ctx.query_devices()) == 0:
+            raise RuntimeError("RealSense 장치 없음")
+        cfg = rs.config()
+        if serial:
+            cfg.enable_device(serial)
+        cfg.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+        pipeline = rs.pipeline()
+        pipeline.start(cfg)
+        print(f"[Camera{slot}] RealSense 워밍업 중 (serial={serial or 'auto'})...")
+        for _ in range(10):
+            try: pipeline.wait_for_frames(timeout_ms=300)
+            except: pass
+        _cam_infos[slot]["source"] = f"RealSense:{serial}" if serial else "RealSense"
+        print(f"[Camera{slot}] RealSense SDK 연결 성공 — {label}")
+    except Exception as e:
+        print(f"[Camera{slot}] pyrealsense2 skip({e}), ffmpeg로 진행")
+        pipeline = None
 
-    # ── RealSense SDK 시도 (slot 0, pyrealsense2 설치된 경우) ──────────────────
-    if slot == 0:
-        try:
-            import pyrealsense2 as rs, numpy as np
-            ctx = rs.context()
-            rs_devs = ctx.query_devices()
-            if len(rs_devs) == 0:
-                raise RuntimeError("RealSense 장치 없음")
-            cfg = rs.config()
-            cfg.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-            pipeline = rs.pipeline()
-            pipeline.start(cfg)
-            print(f"[Camera{slot}] RealSense 파이프라인 워밍업 중...")
-            for _ in range(10):
-                try: pipeline.wait_for_frames(timeout_ms=300)
-                except: pass
-            _cam_infos[slot]["source"] = "RealSense"
-            print(f"[Camera{slot}] RealSense SDK 연결 성공 — {label}")
-        except Exception as e:
-            print(f"[Camera{slot}] pyrealsense2 skip({e}), ffmpeg로 진행")
-            pipeline = None
-
-    # ── ffmpeg subprocess로 v4l2 캡처 ────────────────────────────────────────
+    # ── ffmpeg v4l2 폴백 ──────────────────────────────────────────────────────
     import subprocess, numpy as np
     proc = None
     W, H = 640, 480
@@ -125,8 +157,6 @@ def _camera_worker(camera_id: int = 0, slot: int = 0) -> None:
                 ]
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                         stderr=subprocess.DEVNULL, bufsize=frame_bytes*2)
-                # 첫 프레임 수신 확인 (최대 3초)
-                proc.stdout._timeout = None
                 raw = proc.stdout.read(frame_bytes)
                 if len(raw) == frame_bytes:
                     _cam_infos[slot]["source"] = f"webcam:{camera_id}"
@@ -152,7 +182,7 @@ def _camera_worker(camera_id: int = 0, slot: int = 0) -> None:
                 raw = proc.stdout.read(frame_bytes)
                 if len(raw) == frame_bytes:
                     frame = np.frombuffer(raw, dtype=np.uint8).reshape(H, W, 3)
-                else:          # 프로세스 죽음 → 재시작 필요
+                else:
                     proc.kill(); proc = None; time.sleep(1)
         except Exception: pass
         if frame is not None:
@@ -166,7 +196,6 @@ def _camera_worker(camera_id: int = 0, slot: int = 0) -> None:
                     fc, ft = 0, now
             except Exception: pass
         elif proc is None and pipeline is None:
-            # ffmpeg 재시작
             time.sleep(3)
             try:
                 proc = subprocess.Popen(
@@ -215,8 +244,8 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
 
 /* HEADER */
 .hdr{background:var(--surface);border-bottom:1px solid var(--border);
-  box-shadow:var(--sh-sm);padding:0 16px;height:44px;flex-shrink:0;
-  display:flex;align-items:center;justify-content:space-between;gap:10px;z-index:10}
+  box-shadow:var(--sh-sm);padding:0 12px;height:40px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:space-between;gap:8px;z-index:10}
 .hd-brand{display:flex;align-items:center;gap:8px;flex-shrink:0}
 .hd-logo{width:26px;height:26px;border-radius:6px;
   background:linear-gradient(135deg,#c0392b,#e74c3c);
@@ -253,12 +282,12 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
 
 /* MAIN */
 .main{flex:1;min-height:0;display:flex;flex-direction:column;
-  padding:8px 14px;gap:7px;overflow:hidden}
+  padding:5px 10px;gap:5px;overflow:hidden}
 
 /* STATS */
-.stats-row{display:grid;grid-template-columns:repeat(8,1fr);gap:6px;flex-shrink:0}
+.stats-row{display:grid;grid-template-columns:repeat(8,1fr);gap:4px;flex-shrink:0}
 .sc{background:var(--card);border:1px solid var(--border);border-radius:var(--r);
-  padding:7px 10px 6px;position:relative;overflow:hidden;box-shadow:var(--sh);
+  padding:5px 8px 4px;position:relative;overflow:hidden;box-shadow:var(--sh);
   transition:box-shadow .2s,transform .15s}
 .sc:hover{box-shadow:0 4px 6px rgba(0,0,0,.07);transform:translateY(-1px)}
 .sc::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;
@@ -267,16 +296,35 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
 .sy::before{background:var(--yellow)}.sr::before{background:var(--red)}
 .sc2::before{background:var(--cyan)}.sp::before{background:var(--purple)}
 .ss::before{background:var(--slate)}
-.sc-lbl{font-size:12px;font-weight:700;color:var(--t2);text-transform:uppercase;
-  letter-spacing:.3px;margin-bottom:4px}
-.sc-val{font-family:var(--mono);font-size:22px;font-weight:800;line-height:1;
+.sc-lbl{font-size:11px;font-weight:700;color:var(--t2);text-transform:uppercase;
+  letter-spacing:.3px;margin-bottom:2px}
+.sc-val{font-family:var(--mono);font-size:21px;font-weight:800;line-height:1;
   font-variant-numeric:tabular-nums;transition:color .3s}
 .sc-unit{font-size:11px;font-weight:600;margin-left:2px;font-family:var(--font);color:var(--t3)}
 .sg .sc-val{color:var(--green)}.sb .sc-val{color:var(--blue)}
 .sy .sc-val{color:var(--yellow)}.sc2 .sc-val{color:var(--cyan)}
 .sp .sc-val{color:var(--purple)}.ss .sc-val{color:var(--slate)}
-.sc-bar{margin-top:6px;height:2px;border-radius:2px;background:var(--border);overflow:hidden}
+.sc-bar{margin-top:3px;height:2px;border-radius:2px;background:var(--border);overflow:hidden}
 .sc-bar-f{height:100%;border-radius:2px;transition:width .6s ease}
+
+/* SESSION INFO BAR */
+.sinfo-bar{display:flex;align-items:stretch;background:var(--card);
+  border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--sh);
+  flex-shrink:0;overflow:hidden;height:30px}
+.sinfo-cell{display:flex;align-items:center;gap:6px;padding:0 12px;
+  border-right:1px solid var(--border);flex-shrink:0}
+.sinfo-cell:last-child{border-right:none}
+.sinfo-lbl{font-size:8px;font-weight:700;color:var(--t3);text-transform:uppercase;
+  letter-spacing:.5px;white-space:nowrap}
+.sinfo-val{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--t1);
+  white-space:nowrap;transition:color .4s}
+.sinfo-inp{width:44px;padding:1px 4px;border:1px solid var(--border);border-radius:4px;
+  font-family:var(--mono);font-size:11px;background:var(--bg);outline:none;text-align:right;color:var(--t1)}
+.sinfo-inp:focus{border-color:var(--blue);background:var(--blue-bg)}
+.sinfo-btn{padding:2px 8px;border-radius:4px;border:none;background:var(--blue);
+  color:#fff;font-size:9px;font-weight:700;cursor:pointer}
+.sinfo-btn:hover{background:var(--blue-tx)}
+.sinfo-unit{font-size:9px;color:var(--t3);white-space:nowrap}
 
 /* META ROW */
 .meta-row{display:grid;grid-template-columns:3fr 2fr 2fr;gap:6px;flex-shrink:0}
@@ -308,8 +356,8 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
 
 /* BOTTOM ROW */
 .bot{flex:1;min-height:0;display:grid;
-  grid-template-columns:200px 320px 1fr 250px;
-  gap:6px;overflow:hidden}
+  grid-template-columns:185px 295px 1fr 190px;
+  gap:5px;overflow:hidden}
 
 /* GRAPH BANNER (4열 상단) */
 .bg-panel{grid-column:1/5;grid-row:1;
@@ -500,7 +548,7 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
 .cam-body{flex:1;min-height:0;position:relative;background:#0a0f1e;
   display:flex;align-items:center;justify-content:center;
   overflow:hidden;cursor:pointer}
-.cam-img{width:100%;height:100%;object-fit:cover;display:block}
+.cam-img{width:100%;height:100%;object-fit:contain;display:block}
 .cam-live{position:absolute;top:7px;right:7px;display:flex;align-items:center;gap:4px;
   background:rgba(220,38,38,.88);border-radius:3px;padding:2px 6px;
   font-size:9px;font-weight:800;letter-spacing:1.4px;color:#fff;
@@ -680,6 +728,28 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
       <div class="sc-lbl" style="color:var(--t3)">감지 딸기</div>
       <div class="sc-val" id="v-det" style="color:var(--cyan)">0<span class="sc-unit">개</span></div>
       <div style="font-size:9px;color:var(--t3);margin-top:2px" id="v-det-sub">미수확 —</div>
+    </div>
+  </div>
+
+  <!-- 세션 정보 바 -->
+  <div class="sinfo-bar">
+    <div class="sinfo-cell">
+      <span class="sinfo-lbl">세션 시작</span>
+      <span class="sinfo-val" id="si-start">—</span>
+    </div>
+    <div class="sinfo-cell">
+      <span class="sinfo-lbl">예약 운영</span>
+      <input class="sinfo-inp" type="number" id="si-dur-inp" min="0.1" max="24" step="0.5" value="" placeholder="—">
+      <span class="sinfo-unit">시간</span>
+      <button class="sinfo-btn" onclick="setPlannedDuration()">설정</button>
+    </div>
+    <div class="sinfo-cell">
+      <span class="sinfo-lbl">종료 예정</span>
+      <span class="sinfo-val" id="si-end" style="color:var(--t3)">—</span>
+    </div>
+    <div class="sinfo-cell" style="flex:1">
+      <span class="sinfo-lbl">남은 시간</span>
+      <span class="sinfo-val" id="si-remain" style="color:var(--t3)">—</span>
     </div>
   </div>
 
@@ -871,6 +941,10 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
               <div class="cam-spin" id="cam-spin-0"></div>
               <div class="cam-ph-txt" id="cam-ph-txt-0">카메라 연결 없음</div>
             </div>
+            <div class="cam-ov" id="cam-ov-0">
+              <span id="cam-ov-ts"></span>
+              <span id="cam-ov-src-0"></span>
+            </div>
             <div class="cam-fs-hint">클릭: 전체화면</div>
           </div>
         </div>
@@ -979,6 +1053,23 @@ setInterval(()=>{
   ce.textContent=s;ce.style.color='var(--yellow)';te.textContent=s;
 },200);
 
+/* 남은 시간 카운트다운 */
+let _siSessionStart=null, _siPlannedHours=0;
+setInterval(()=>{
+  const remEl=document.getElementById('si-remain');
+  if(!remEl)return;
+  if(!_siSessionStart||!_siPlannedHours){remEl.textContent='—';remEl.style.color='var(--t3)';return;}
+  const endMs=_siSessionStart.getTime()+_siPlannedHours*3600000;
+  const remMs=endMs-Date.now();
+  if(remMs<=0){remEl.textContent='종료';remEl.style.color='var(--t3)';return;}
+  const rs=Math.floor(remMs/1000);
+  const hh=Math.floor(rs/3600),mm=Math.floor((rs%3600)/60),ss=rs%60;
+  remEl.textContent=hh>0
+    ?`${hh}:${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`
+    :`${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+  remEl.style.color=remMs<1800000?'var(--red)':remMs<3600000?'var(--yellow)':'var(--green)';
+},1000);
+
 /* 데미지 플래시 */
 function triggerDmgFlash(){
   const el=document.getElementById('dmg-flash');
@@ -1050,6 +1141,15 @@ function checkSnapshots(s){
   if(succ>prevSuccSnap){captureSnapshot('success');prevSuccSnap=succ;}
   else if(att>prevAttSnap&&succ===prevSuccSnap){captureSnapshot('fail');}
   prevAttSnap=att;
+}
+
+/* 예약 운영 시간 설정 */
+async function setPlannedDuration(){
+  const h=parseFloat(document.getElementById('si-dur-inp').value);
+  if(!h||h<=0)return;
+  await fetch('/api/set-planned-duration',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({hours:h})}).catch(()=>{});
 }
 
 /* 목표 설정 */
@@ -1301,6 +1401,24 @@ function render(s){
     const st=new Date(s.session_start);
     document.getElementById('session-info').textContent=
       st.toLocaleTimeString('ko-KR',{hour12:false})+' 시작 / '+fmt((Date.now()-st)/1000)+' 경과';
+    _siSessionStart=st;
+    document.getElementById('si-start').textContent=st.toLocaleTimeString('ko-KR',{hour12:false});
+  } else {
+    _siSessionStart=null;
+    document.getElementById('si-start').textContent='—';
+  }
+  _siPlannedHours=s.planned_duration_hours||0;
+  if(_siPlannedHours>0){
+    const inp=document.getElementById('si-dur-inp');
+    if(inp&&inp!==document.activeElement)inp.value=_siPlannedHours;
+    if(_siSessionStart){
+      const endTime=new Date(_siSessionStart.getTime()+_siPlannedHours*3600000);
+      document.getElementById('si-end').textContent=endTime.toLocaleTimeString('ko-KR',{hour12:false});
+      document.getElementById('si-end').style.color='var(--t1)';
+    }
+  } else {
+    document.getElementById('si-end').textContent='—';
+    document.getElementById('si-end').style.color='var(--t3)';
   }
 
   document.getElementById('v-harvest').innerHTML=(s.success_count||0)+'<span class="sc-unit">개</span>';
@@ -1327,9 +1445,9 @@ function render(s){
   /* 수확 속도 */
   const spE=document.getElementById('v-speed'),spU=document.getElementById('v-speed-u');
   if(s.session_start&&s.success_count>0){
-    const h=(Date.now()-new Date(s.session_start))/3600000;
-    if(h>0.001){spE.innerHTML=(s.success_count/h).toFixed(1)+'<span class="sc-unit">개</span>';
-      spE.style.color='var(--purple)';spU.textContent='/ 시간';}
+    const sec=(Date.now()-new Date(s.session_start))/1000;
+    spE.innerHTML=(sec/s.success_count).toFixed(1)+'<span class="sc-unit">초</span>';
+    spE.style.color='var(--purple)';spU.textContent='/ 개';
   }else{spE.textContent='—';spE.style.color='var(--t3)';spU.textContent='';}
 
   /* 손상률 */
@@ -1495,7 +1613,9 @@ function toggleCamFS(i){
 """
 
 # ── FastAPI ───────────────────────────────────────────────────────────────────
-def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False):
+def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
+             serial_cam0='', serial_cam1='',
+             camera_url_0='', camera_url_1=''):
     try:
         from fastapi import FastAPI, WebSocket, Request
         from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
@@ -1550,6 +1670,12 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False):
     async def set_target(request: Request):
         b = await request.json()
         s = _load(); s["target_count"] = max(1, int(b.get("target",15)))
+        _save(s); return JSONResponse({"ok": True})
+
+    @app.post("/api/set-planned-duration")
+    async def set_planned_duration(request: Request):
+        b = await request.json()
+        s = _load(); s["planned_duration_hours"] = max(0.0, float(b.get("hours", 0)))
         _save(s); return JSONResponse({"ok": True})
 
     @app.post("/api/teleop")
@@ -1627,9 +1753,13 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False):
         except Exception: pass
 
     if not no_camera:
-        threading.Thread(target=_camera_worker, args=(camera_id, 0), daemon=True).start()
-        if camera_id_1 >= 0:
-            threading.Thread(target=_camera_worker, args=(camera_id_1, 1), daemon=True).start()
+        threading.Thread(target=_camera_worker,
+            kwargs=dict(camera_id=camera_id, slot=0, serial=serial_cam0, url=camera_url_0),
+            daemon=True).start()
+        if camera_id_1 >= 0 or camera_url_1:
+            threading.Thread(target=_camera_worker,
+                kwargs=dict(camera_id=camera_id_1, slot=1, serial=serial_cam1, url=camera_url_1),
+                daemon=True).start()
     if demo:
         threading.Thread(target=_run_demo, daemon=True).start()
     return app
@@ -1730,6 +1860,10 @@ def main():
     p.add_argument('--no-camera', action='store_true')
     p.add_argument('--camera-id',   type=int, default=int(os.environ.get('CAMERA_ID',   6)))
     p.add_argument('--camera-id-1', type=int, default=int(os.environ.get('CAMERA_ID_1', 0)))
+    p.add_argument('--serial-cam0', default=os.environ.get('REALSENSE_SERIAL_0', ''))
+    p.add_argument('--serial-cam1', default=os.environ.get('REALSENSE_SERIAL_1', ''))
+    p.add_argument('--camera-url-0', default=os.environ.get('CAMERA_URL_0', ''))
+    p.add_argument('--camera-url-1', default=os.environ.get('CAMERA_URL_1', ''))
     p.add_argument('--port',      type=int, default=8765)
     p.add_argument('--host',      default='0.0.0.0')
     p.add_argument('--update', choices=['start_harvest','harvest_success','harvest_fail','damage','reset'])
@@ -1767,7 +1901,9 @@ def main():
     try: import uvicorn
     except ImportError: print("pip install 'uvicorn[standard]'"); sys.exit(1)
     app = make_app(demo=args.demo, camera_id=args.camera_id,
-                   camera_id_1=args.camera_id_1, no_camera=args.no_camera)
+                   camera_id_1=args.camera_id_1, no_camera=args.no_camera,
+                   serial_cam0=args.serial_cam0, serial_cam1=args.serial_cam1,
+                   camera_url_0=args.camera_url_0, camera_url_1=args.camera_url_1)
     print(f"\n  딸기 수확 대시보드  →  http://localhost:{args.port}\n")
     if args.demo: print("  [데모 모드] 시뮬레이션 진행 중\n")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")

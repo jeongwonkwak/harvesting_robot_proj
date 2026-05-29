@@ -45,8 +45,10 @@ YOLO_MODEL     = str(WS_DIR / 'models/strawberry_yolo26m_unified/weights/last.pt
 GRIPPER_PORT   = '/dev/ttyUSB0'
 ROBOT_ID       = 'dsr01'
 CONF_THRESHOLD = 0.3
-STEP_MM        = 10.0
-STEP_DEG       =  5.0
+STEP_MM        = 60.0
+STEP_DEG       = 20.0
+VELOCITY       = 3000.0
+ACCELERATION   = 800.0
 RECORD_DIR     = str(WS_DIR / 'src/teleop_records')
 RAW_DIR        = str(WS_DIR / 'data/raw/final_project')
 DATASET_NAME   = 'vla_dataset_v0.3.0'
@@ -79,7 +81,8 @@ def _auto_episode(raw_dir: str) -> str:
 
 class TeleopRecordAndConvertEEF:
     def __init__(self, episode: str, task: str, category: str = '', raw_dir: str = '', mid_dir: str = '',
-                 skip_convert: bool = False, home_pose: str = HOME_POSE_DEFAULT):
+                 skip_convert: bool = False, home_pose: str = HOME_POSE_DEFAULT,
+                 serial_cam1: str = '', serial_cam2: str = ''):
         self._episode      = episode
         self._task         = task
         self._category     = category
@@ -88,6 +91,8 @@ class TeleopRecordAndConvertEEF:
         self._skip_convert = skip_convert
         self._home_pose    = HOME_POSES.get(home_pose, HOME_POSES[HOME_POSE_DEFAULT])
         self._home_pose_name = home_pose
+        self._serial_cam1  = serial_cam1
+        self._serial_cam2  = serial_cam2
         self._procs: list  = []
 
         rclpy.init()
@@ -115,6 +120,16 @@ class TeleopRecordAndConvertEEF:
 
         self._logger.info(f'YOLO 로드: {YOLO_MODEL}')
         self._yolo = YOLO(YOLO_MODEL)
+
+        # YOLO 비동기 워커
+        self._yolo_raw   = None
+        self._yolo_lock  = threading.Lock()
+        self._yolo_boxes = []
+        threading.Thread(target=self._yolo_worker, daemon=True).start()
+
+        # 상태 퍼블리시 백그라운드 워커 (20Hz, 메인 루프 비차단)
+        self._publish_running = True
+        threading.Thread(target=self._publish_worker, daemon=True).start()
 
         os.makedirs(RECORD_DIR, exist_ok=True)
         run_ts = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -144,8 +159,8 @@ class TeleopRecordAndConvertEEF:
             'depth_module.depth_profile:=640x480x30',
             'align_depth.enable:=true',
         ]
-        if SERIAL_CAM1:
-            rs1_cmd.append(f'serial_no:={SERIAL_CAM1}')
+        if self._serial_cam1:
+            rs1_cmd.append(f"serial_no:='{self._serial_cam1}'")
         rs1 = subprocess.Popen(rs1_cmd)
         self._procs.append(rs1)
 
@@ -156,8 +171,8 @@ class TeleopRecordAndConvertEEF:
             'enable_color:=true', 'enable_depth:=false',
             'rgb_camera.color_profile:=640x480x30',
         ]
-        if SERIAL_CAM2:
-            rs2_cmd.append(f'serial_no:={SERIAL_CAM2}')
+        if self._serial_cam2:
+            rs2_cmd.append(f"serial_no:='{self._serial_cam2}'")
         rs2 = subprocess.Popen(rs2_cmd)
         self._procs.append(rs2)
 
@@ -205,22 +220,60 @@ class TeleopRecordAndConvertEEF:
                 p.kill()
         self._procs.clear()
 
+    # ── YOLO 백그라운드 워커 ───────────────────────────────────────────────────
+
+    def _yolo_worker(self):
+        """전용 스레드에서 YOLO 추론. 메인 루프 블로킹 없음."""
+        while True:
+            with self._yolo_lock:
+                frame = self._yolo_raw
+                self._yolo_raw = None
+            if frame is None:
+                time.sleep(0.005)
+                continue
+            try:
+                boxes = []
+                for box in self._yolo.predict(frame, verbose=False, conf=CONF_THRESHOLD)[0].boxes:
+                    cls_id = int(box.cls[0])
+                    boxes.append((
+                        cls_id,
+                        [int(v) for v in box.xyxy[0].tolist()],
+                        float(box.conf[0]),
+                        self._yolo.names[cls_id],
+                    ))
+                with self._yolo_lock:
+                    self._yolo_boxes = boxes
+            except Exception:
+                pass
+
+    def _publish_worker(self):
+        """20Hz로 EEF pose + 그리퍼 상태를 퍼블리시. 메인 루프와 완전히 분리."""
+        interval = 1.0 / 20.0
+        while self._publish_running:
+            try:
+                self._publish_state()
+            except Exception:
+                pass
+            time.sleep(interval)
+
     # ── 로봇 제어 ──────────────────────────────────────────────────────────────
 
     def _move_robot_async(self, dx=0, dy=0, dz=0, drx=0, dry=0, drz=0):
         if self._is_moving:
             return
+        # 스레드 시작 전에 플래그 설정 → 레이스 컨디션 방지
+        self._is_moving = True
         eef = self._robot.get_eef_pose()
         if eef is None:
+            self._is_moving = False
             return
         target = eef.copy()
         target[0] += dx;  target[1] += dy;  target[2] += dz
         target[3] += drx; target[4] += dry; target[5] += drz
 
         def task():
-            self._is_moving = True
             try:
-                self._robot.move_line(target.tolist(), velocity=40.0, acceleration=80.0)
+                self._robot.move_line(target.tolist(), velocity=VELOCITY, acceleration=ACCELERATION)
             finally:
                 self._is_moving = False
         threading.Thread(target=task, daemon=True).start()
@@ -257,13 +310,14 @@ class TeleopRecordAndConvertEEF:
 
     def _move_to_home(self) -> None:
         """홈 포즈로 이동 (blocking). 진행 중인 비동기 이동 완료 후 실행."""
-        # 비동기 이동 완료 대기 (최대 5초)
         deadline = time.time() + 5.0
         while self._is_moving and time.time() < deadline:
             time.sleep(0.1)
         print(f'[홈] {self._home_pose_name} → {[round(v, 2) for v in self._home_pose]}')
-        self._robot.move_line(self._home_pose, velocity=30.0, acceleration=60.0)
-        self._move_gripper_to_async(350)
+        self._robot.move_line(self._home_pose, velocity=VELOCITY, acceleration=ACCELERATION)
+        self._move_gripper_to_async(600)
+        # 그리퍼 + 로봇이 완전히 정지할 때까지 대기
+        time.sleep(1.0)
 
     # ── 메인 루프 ──────────────────────────────────────────────────────────────
 
@@ -274,6 +328,7 @@ class TeleopRecordAndConvertEEF:
         print('================================================')
         self._move_to_home()
 
+        print('\n홈 포즈 도달 완료. 녹화를 시작합니다...')
         self._start_infra()
 
         WIN  = 'YOLO 인식 카메라  (Esc → 홈 복귀 & 종료)'
@@ -329,12 +384,15 @@ class TeleopRecordAndConvertEEF:
                 continue
 
             frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-            for box in self._yolo.predict(frame, verbose=False, conf=CONF_THRESHOLD)[0].boxes:
-                cls_id = int(box.cls[0])
-                x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+            # YOLO 워커에 최신 프레임 전달 (즉시 리턴)
+            with self._yolo_lock:
+                self._yolo_raw = frame.copy()
+                boxes = list(self._yolo_boxes)
+            # 이전 추론 결과를 현재 프레임에 오버레이
+            for cls_id, (x1, y1, x2, y2), conf, name in boxes:
                 color = (0, 0, 255) if cls_id == 0 else (0, 200, 0)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame, f'{self._yolo.names[cls_id]} {float(box.conf[0]):.2f}',
+                cv2.putText(frame, f'{name} {conf:.2f}',
                             (x1, max(y1 - 10, 10)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
@@ -344,8 +402,6 @@ class TeleopRecordAndConvertEEF:
                 cv2.rectangle(frame, (0, 0), (frame.shape[1], 40), (0, 0, 180), -1)
                 cv2.putText(frame, msg_txt, (10, 28),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-
-            self._publish_state()   # 그리퍼 + EEF 동시 퍼블리시
 
             if self._gripper_input:
                 overlay_txt = f'Gripper > {self._gripper_input}_  (Enter: 전송 / Esc: 취소)'
@@ -368,7 +424,7 @@ class TeleopRecordAndConvertEEF:
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
                 cv2.imshow(WIN2, frame2)
 
-            key = cv2.waitKey(1) & 0xFF
+            key = cv2.waitKey(33) & 0xFF  # ~30fps, 자동 반복 억제
 
             if self._gripper_input:
                 if ord('0') <= key <= ord('9'):
@@ -415,12 +471,38 @@ class TeleopRecordAndConvertEEF:
                 else:
                     self._logger.warn('EEF pose를 가져오지 못했습니다.')
 
-        cv2.destroyAllWindows()
-        # ── 홈 포즈 복귀 (bag 녹화 중) ───────────────────────────────────────
+        # ── 홈 포즈 복귀 (bag 녹화 중, 카메라 화면 유지) ────────────────────
         print('\n================================================')
         print(f' 홈 포즈로 복귀 중 (녹화 중) : {self._home_pose_name}')
         print('================================================')
-        self._move_to_home()
+        home_done = threading.Event()
+        threading.Thread(
+            target=lambda: (self._move_to_home(), home_done.set()),
+            daemon=True,
+        ).start()
+
+        loop_start = time.time()
+        while not home_done.is_set() or time.time() - loop_start < 3.0:
+            self._camera.grab()
+            rgb, _ = self._camera.get_images()
+            if rgb is not None:
+                frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                if home_done.is_set():
+                    label, color = '홈 복귀 완료 — 녹화 종료 중...', (0, 200, 200)
+                else:
+                    label, color = '홈 복귀 중... (녹화 중)', (0, 255, 100)
+                cv2.rectangle(frame, (0, 0), (frame.shape[1], 44), (0, 80, 0), -1)
+                cv2.putText(frame, label, (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2, cv2.LINE_AA)
+                cv2.imshow(WIN, frame)
+            self._camera2.grab()
+            rgb2, _ = self._camera2.get_images()
+            if rgb2 is not None:
+                cv2.imshow(WIN2, cv2.cvtColor(rgb2, cv2.COLOR_RGB2BGR))
+            cv2.waitKey(30)
+
+        cv2.destroyAllWindows()
+        self._publish_running = False
         print('\n인프라 종료 중...')
         self._stop_infra()
         if self._skip_convert:
@@ -504,6 +586,10 @@ def main():
     parser.add_argument('--home-pose', default=HOME_POSE_DEFAULT,
                         choices=list(HOME_POSES.keys()),
                         help=f'시작/종료 홈 포즈 선택 (기본값: {HOME_POSE_DEFAULT})')
+    parser.add_argument('--serial-cam1', default='',
+                        help='YOLO 인식 카메라 RealSense 시리얼 번호 (빈 칸 = 자동)')
+    parser.add_argument('--serial-cam2', default='',
+                        help='전경 카메라 RealSense 시리얼 번호 (빈 칸 = 자동)')
     args = parser.parse_args()
 
     raw_dir = args.raw_dir or RAW_DIR
@@ -516,12 +602,16 @@ def main():
     print(f'홈 포즈:  {args.home_pose}  {HOME_POSES[args.home_pose]}')
     print(f'raw 경로: {raw_dir}')
     print(f'mid 경로: {args.mid_dir or str(WS_DIR / "data/mid")}')
+    print(f'CAM1 시리얼: {args.serial_cam1 or "(자동)"}')
+    print(f'CAM2 시리얼: {args.serial_cam2 or "(자동)"}')
 
     app = TeleopRecordAndConvertEEF(episode=episode, task=args.task,
                                     category=args.category, raw_dir=raw_dir,
                                     mid_dir=args.mid_dir,
                                     skip_convert=args.skip_convert,
-                                    home_pose=args.home_pose)
+                                    home_pose=args.home_pose,
+                                    serial_cam1=args.serial_cam1,
+                                    serial_cam2=args.serial_cam2)
     try:
         app.run()
     except KeyboardInterrupt:

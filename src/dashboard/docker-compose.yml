@@ -1,4 +1,32 @@
 services:
+
+  # ── ROS2 브리지: 상태파일 + MJPEG 서버 + USB 폴백 ────────────────────────────
+  ros2-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.bridge
+    container_name: harvest-ros2-bridge
+    network_mode: "host"
+    privileged: true
+    volumes:
+      - ./data:/data
+      - /opt/ros/humble:/opt/ros/humble:ro
+      - /home/user/robot_workspace/doosan_ws/install:/doosan_ws/install:ro
+      - /dev/bus/usb:/dev/bus/usb
+      - /home/user/robot_workspace/vla_ws/models:/models:ro
+    environment:
+      - HARVEST_STATE_FILE=/data/harvest_state.json
+      - MJPEG_PORT=8766
+      - CAM0_TOPIC=/camera/camera/color/image_raw
+      - CAM1_TOPIC=/camera2/camera2/color/image_raw
+      - REALSENSE_SERIAL_0=215122254786
+      - REALSENSE_SERIAL_1=342622303457
+      - YOLO_MODEL=/models/strawberry_yolo26m_unified/weights/last.pt
+      - YOLO_CONF=0.3
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+    restart: unless-stopped
+
+  # ── 웹 대시보드 ───────────────────────────────────────────────────────────────
   harvest-dashboard:
     build:
       context: .
@@ -7,14 +35,10 @@ services:
     network_mode: "host"
     environment:
       - HARVEST_STATE_FILE=/data/harvest_state.json
-      - CAMERA_ID=0       # 슬롯0: /dev/video0  (카메라 A)
-      - CAMERA_ID_1=1     # 슬롯1: /dev/video1  (카메라 B — 같은 기기 메타데이터 노드)
-      # RealSense 연결 시: CAMERA_ID=6, CAMERA_ID_1=0
+      - CAMERA_URL_0=http://localhost:8766/cam0
+      - CAMERA_URL_1=http://localhost:8766/cam1
     volumes:
       - ./data:/data
-    devices:
-      - /dev/video0:/dev/video0
-      - /dev/video1:/dev/video1
-      - /dev/bus/usb:/dev/bus/usb
-    privileged: true
     restart: unless-stopped
+    depends_on:
+      - ros2-bridge

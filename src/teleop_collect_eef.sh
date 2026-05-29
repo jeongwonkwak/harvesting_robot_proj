@@ -9,13 +9,20 @@
 EPISODE=""     # 비워두면 기존 에피소드 수 기준으로 자동 부여
 TASK="Grasp the strawberry stem and pick it."
 
-# 데이터 카테고리 — 아래 6가지 중 하나로 변경:
-#   no_occlusion              S1. 기본 (폐색 없음)     딸기가 명확히 보이는 기본 수확          목표: 10~15개
-#   partial_leaf_occlusion    S2. 잎 부분 폐색         잎이 딸기를 30~60% 가림                목표: 20~30개
-#   full_leaf_occlusion       S3. 잎 완전 폐색         딸기가 거의 안 보임, 잎 밀어내며 접근   목표: 20~30개
-#   unripe_occlusion          S4. 미성숙 딸기 폐색     초록 딸기 뒤에 빨간 딸기               목표: 15~20개
-#   dense_cluster             S5. 딸기 밀집/겹침       여러 딸기가 붙어있어 타겟 선택 어려움   목표: 15~20개
-#   recovery                  S6. 회복 동작            첫 시도 실패 후 재잡기 (실패+재시도)    목표: 10~15개
+# RealSense 카메라 시리얼 번호 (rs-enumerate-devices | grep Serial 로 확인)
+# 카메라가 1개만 연결되어 있거나 순서가 고정되어 있으면 비워둬도 됨
+# 두 카메라가 동시에 연결된 경우 반드시 지정해야 카메라가 뒤바뀌지 않음
+SERIAL_CAM1="215122254786"   # YOLO 인식 카메라 시리얼 (예: "123622270786")
+SERIAL_CAM2="342622303457"   # 전경 카메라 시리얼     (예: "342622303457")
+
+# 데이터 카테고리 — 아래 7가지 중 하나로 변경:
+#   no_occlusion                S1. 폐색 없음           딸기가 명확히 보이는 기본 수확
+#   unripe_occlusion_mild       S2. 미숙 딸기 폐색 (약) 초록 딸기가 빨간 딸기를 살짝 가림
+#   unripe_occlusion_moderate   S3. 미숙 딸기 폐색 (중) 초록 딸기가 절반 정도 가림
+#   unripe_occlusion_heavy      S4. 미숙 딸기 폐색 (강) 초록 딸기가 대부분 가림
+#   leaf_occlusion_mild         S5. 잎 폐색 (약)        잎이 딸기를 살짝 가림
+#   leaf_occlusion_moderate     S6. 잎 폐색 (중)        잎이 딸기를 절반 정도 가림
+#   leaf_occlusion_heavy        S7. 잎 폐색 (강)        잎이 딸기를 대부분 가림
 CATEGORY="no_occlusion"
 
 # 홈 포즈 — 아래 4가지 중 하나로 변경:
@@ -23,7 +30,7 @@ CATEGORY="no_occlusion"
 #   top_left      좌상단  (x-270mm, z+185mm)
 #   bottom_right  우하단  (x+270mm, z-185mm)
 #   bottom_left   좌하단  (x-270mm, z-185mm)
-HOME_POSE="top_left"
+HOME_POSE="top_right"
 
 RAW_DIR="/home/user/robot_workspace/vla_ws/data/raw/final_project/vla_dataset_v0.3.0"     # 비워두면 <ws>/data/raw 기본값 사용
 
@@ -66,7 +73,9 @@ TELEOP_ARGS=(
     --home-pose    "${HOME_POSE}"
     --skip-convert
 )
-[[ -n "$EPISODE" ]] && TELEOP_ARGS+=(--episode "${EPISODE}")
+[[ -n "$EPISODE"     ]] && TELEOP_ARGS+=(--episode    "${EPISODE}")
+[[ -n "$SERIAL_CAM1" ]] && TELEOP_ARGS+=(--serial-cam1 "${SERIAL_CAM1}")
+[[ -n "$SERIAL_CAM2" ]] && TELEOP_ARGS+=(--serial-cam2 "${SERIAL_CAM2}")
 
 python3 "$WS_DIR/src/teleop_record_and_convert_eef.py" "${TELEOP_ARGS[@]}"
 
