@@ -5,7 +5,7 @@
 
 set -eo pipefail
 
-DEFAULT_CONFIG="/workspace/scripts/vla_sft_v.0.2.0.yaml"
+DEFAULT_CONFIG="/workspace/scripts/vla_sft_v.0.3.0.yaml"
 CONFIG="${1:-$DEFAULT_CONFIG}"
 
 # ── YAML 파싱 ─────────────────────────────────────────────────
@@ -31,6 +31,8 @@ BASE_MODEL_PATH=$(yaml base_model_path)
 PEFT_R=$(python3 -c "import yaml; v=yaml.safe_load(open('${CONFIG}')); print(v.get('peft', {}).get('r', '') if v.get('peft') else '')")
 VLM_MODEL_NAME=$(python3 -c "import yaml; v=yaml.safe_load(open('${CONFIG}')); print(v.get('vlm_model_name') or '')")
 RENAME_MAP=$(python3 -c "import yaml; v=yaml.safe_load(open('${CONFIG}')); print(v.get('rename_map') or '')")
+WANDB_ENABLE=$(python3 -c "import yaml; v=yaml.safe_load(open('${CONFIG}')); print(str(v.get('wandb', {}).get('enable', False)).lower())")
+WANDB_PROJECT=$(python3 -c "import yaml; v=yaml.safe_load(open('${CONFIG}')); print(v.get('wandb', {}).get('project', 'lerobot') or 'lerobot')")
 
 OUTPUT_DIR="/models/ours/${JOB_NAME}"
 
@@ -71,5 +73,6 @@ lerobot-train \
     --policy.push_to_hub=false \
     --output_dir="${OUTPUT_DIR}" \
     --job_name="${JOB_NAME}" \
-    --wandb.enable=false \
+    --wandb.enable="${WANDB_ENABLE}" \
+    --wandb.project="${WANDB_PROJECT}" \
     "${@:2}" 2>&1 | tee -a "${LOG_FILE}"

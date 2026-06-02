@@ -13,6 +13,7 @@ services:
       - ../logs:/logs
       - ../train:/workspace/train
       - ../scripts:/workspace/scripts
+      - ../lerobot:/workspace/lerobot
       - ${HF_CACHE:-~/.cache/huggingface}:/root/.cache/huggingface
     runtime: nvidia
     ipc: host
@@ -23,6 +24,7 @@ services:
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
       HF_USER: ${HF_USER:-}
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
     deploy:
       resources:
