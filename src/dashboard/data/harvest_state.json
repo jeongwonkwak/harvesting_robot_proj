@@ -36,7 +36,7 @@
   },
   "pending_joint_command": null,
   "pending_tcp_command": null,
-  "last_updated": "2026-06-09T09:37:07.257783",
+  "last_updated": "2026-06-09T09:44:42.563238",
   "gripper": {
     "position": 100.0,
     "raw_pos": 0,
