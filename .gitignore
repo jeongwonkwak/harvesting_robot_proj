@@ -1,4 +1,6 @@
-data/raw/mini_project
+data/raw/
+data/mid/
+data/fin/
 install/
 log/
 logs/
@@ -6,3 +8,5 @@ models/
 *.egg-info/
 __pycache__/
 *.pyc
+lerobot/
+build/

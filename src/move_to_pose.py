@@ -29,8 +29,8 @@ from grasp_vla.gripper_controller import GripperController
 # 이동할 포즈 선택 (아래 POSES 딕셔너리의 키 중 하나)
 TARGET = 'top_right'
 
-VELOCITY     = 3000
-ACCELERATION = 800
+VELOCITY     = 2000
+ACCELERATION = 250
 GRIPPER_POS  = 600   # 0=열림, 740=완전닫힘
 
 # ── 포즈 정의 ────────────────────────────────────────────────────────────────
@@ -40,10 +40,11 @@ GRIPPER_POS  = 600   # 0=열림, 740=완전닫힘
 
 POSES = {
     # ── 홈 포즈 4종 (TCP) ── NW=top_left / NE=top_right / SE=bottom_right / SW=bottom_left
-    'top_left':     {'mode': 'tcp', 'positions': [-245.34, 373.90, 741.39,  86.46, 66.60, -88.80]},  # NW
-    'top_right':    {'mode': 'tcp', 'positions': [ 285.75, 347.14, 730.58,  85.94, 65.09, -88.59]},  # NE
-    'bottom_left':  {'mode': 'tcp', 'positions': [-248.59, 366.73, 348.70,  86.47, 64.81, -88.15]},  # SW
-    'bottom_right': {'mode': 'tcp', 'positions': [ 284.91, 346.35, 342.92,  86.37, 64.04, -89.22]},  # SE
+    'home':         {'mode': 'tcp', 'positions': [6.35, -0.25, 547.58, 85.67, 66.27, -89.12]},
+    'top_left':     {'mode': 'tcp', 'positions': [-225.46, 338.93, 902.31,  88.42, 87.31, -89.88]},  # NW
+    'top_right':    {'mode': 'tcp', 'positions': [ 314.90, 279.89, 883.40,  89.90, 86.29, -89.62]},  # NE
+    'bottom_left':  {'mode': 'tcp', 'positions': [-247.70, 317.34, 533.88,  87.75, 86.31, -89.49]},  # SW
+    'bottom_right': {'mode': 'tcp', 'positions': [ 312.61, 302.83, 529.32,  89.90, 86.29, -89.62]},  # SE
 
     # ── 기타 포즈 (joint) ──────────────────────────────────────────────────
     'custom_joint': {'mode': 'joint', 'positions': [70, -30, 100, 6.6, 5, -100]},

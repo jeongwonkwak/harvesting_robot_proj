@@ -39,7 +39,7 @@ OUTPUT_DIR   = Path('/home/user/robot_workspace/vla_ws/data/mid')
 DATASET_NAME = 'vla_dataset_v1.0.0'
 
 FPS          = 5
-TASK         = 'robot manipulation task'
+TASK         = 'Grasp the strawberry stem and pick it.'
 ROBOT_TYPE   = 'dsr01'
 CAMERA_NAME  = 'camera1'
 CAMERA2_NAME = 'camera2'
@@ -92,6 +92,12 @@ class CDRReader:
         self.pos += 4
         return v
 
+    def read_float64(self) -> float:
+        self._align(8)
+        v = struct.unpack_from('<d', self.buf, self.pos)[0]
+        self.pos += 8
+        return v
+
     def read_float32_array(self) -> list:
         count = self.read_uint32()
         if count == 0:
@@ -99,6 +105,15 @@ class CDRReader:
         self._align(4)
         vals = list(struct.unpack_from(f'<{count}f', self.buf, self.pos))
         self.pos += count * 4
+        return vals
+
+    def read_float64_array(self) -> list:
+        count = self.read_uint32()
+        if count == 0:
+            return []
+        self._align(8)
+        vals = list(struct.unpack_from(f'<{count}d', self.buf, self.pos))
+        self.pos += count * 8
         return vals
 
     def read_string(self) -> str:
@@ -138,6 +153,36 @@ def parse_tcp_pose(raw: bytes) -> list:
     r.read_uint32()                      # data_offset
     vals = r.read_float32_array()        # [x, y, z, rx, ry, rz]
     return list(vals[:6]) if len(vals) >= 6 else vals
+
+
+def parse_joint_states(raw: bytes) -> list:
+    """
+    Parse sensor_msgs/JointState → [j1_rad, j2_rad, ..., j6_rad] (position field only).
+
+    CDR layout of JointState:
+      Header header                (timestamp, frame_id) ← 먼저 건너뜀
+      string[] name                (joint names)
+      float64[] position           (joint positions in radians)
+      float64[] velocity           (joint velocities)
+      float64[] effort             (joint efforts)
+    """
+    r = CDRReader(raw)
+
+    # Header 건너뛰기
+    r.read_uint32()      # sec
+    r.read_uint32()      # nsec
+    r.read_string()      # frame_id
+
+    # name (string array)
+    name_count = r.read_uint32()
+    for _ in range(name_count):
+        r.read_string()
+
+    # position (float64 array)
+    pos_count = r.read_uint32()
+    positions = [r.read_float64() for _ in range(pos_count)]
+
+    return positions[:6] if len(positions) >= 6 else positions
 
 
 def parse_image(raw: bytes) -> np.ndarray:
@@ -211,6 +256,7 @@ def synchronize(bag_data: dict, fps: int = 10) -> dict | None:
     CAM2 = '/camera2/camera2/color/image_raw'
     TCP  = '/dsr01/tcp_pose'
     GRP  = '/gripper/position'
+    JNT  = '/dsr01/joint_states'
 
     for key in (CAM, TCP):
         if key not in bag_data or len(bag_data[key]) == 0:
@@ -223,6 +269,7 @@ def synchronize(bag_data: dict, fps: int = 10) -> dict | None:
 
     cam_ts = np.array([t for t, _ in bag_data[CAM]], dtype=np.int64)
     tcp_ts = np.array([t for t, _ in bag_data[TCP]], dtype=np.int64)
+    jnt_ts = np.array([t for t, _ in bag_data.get(JNT, [])], dtype=np.int64) if JNT in bag_data else None
 
     t_start = cam_ts[0]
     t_end   = cam_ts[-1]
@@ -242,9 +289,17 @@ def synchronize(bag_data: dict, fps: int = 10) -> dict | None:
 
     cam_idx = _nearest(cam_ts, grid)
     tcp_idx = _nearest(tcp_ts, grid)
+    jnt_idx = _nearest(jnt_ts, grid) if jnt_ts is not None and len(jnt_ts) > 0 else None
 
     # EEF pose 파싱
     eef_poses = [parse_tcp_pose(bag_data[TCP][i][1]) for i in tcp_idx]
+
+    # Joint States 파싱
+    if jnt_idx is not None:
+        joint_angles = [parse_joint_states(bag_data[JNT][i][1]) for i in jnt_idx]
+    else:
+        print(f'    [WARNING] {JNT} 없음 — joint states=0.0 채움.')
+        joint_angles = [[0.0] * 6 for _ in range(len(grid))]
 
     # 그리퍼
     grp_msgs = bag_data.get(GRP, [])
@@ -252,6 +307,10 @@ def synchronize(bag_data: dict, fps: int = 10) -> dict | None:
         grp_ts  = np.array([t for t, _ in grp_msgs], dtype=np.int64)
         grp_idx = _nearest(grp_ts, grid)
         grips   = [parse_float32_msg(grp_msgs[i][1]) for i in grp_idx]
+
+        # 그리퍼 값 범위 확인
+        print(f'    [DEBUG] Gripper raw values (첫 10개): {grips[:10]}')
+        print(f'    [DEBUG] Gripper 범위: min={min(grips):.4f}, max={max(grips):.4f}, mean={np.mean(grips):.4f}')
     else:
         print(f'    [WARNING] {GRP} 없음 — gripper=0.0 채움.')
         grips = [0.0] * len(grid)
@@ -283,24 +342,27 @@ def synchronize(bag_data: dict, fps: int = 10) -> dict | None:
         images2 = imgs2
         print(' done')
 
-    # state: [x_m, y_m, z_m, rx_rad, ry_rad, rz_rad] — 6-dim, 그리퍼 미포함 (LIBERO 호환)
+    # state: [x_m, y_m, z_m, rx_rad, ry_rad, rz_rad, gripper] — 7-dim (EEF only)
     states = []
-    for eef in eef_poses:
-        states.append([
+    for i, eef in enumerate(eef_poses):
+        tcp_state = [
             eef[0] / 1000.0, eef[1] / 1000.0, eef[2] / 1000.0,
             np.radians(eef[3]), np.radians(eef[4]), np.radians(eef[5]),
-        ])
+        ]
+        gripper_state = [grips[i]]  # Gripper current position
+        states.append(tcp_state + gripper_state)
 
     # action: [Δx_m, Δy_m, Δz_m, Δrx_rad, Δry_rad, Δrz_rad, grip_next] — 7-dim
+    # grip_next는 0~740 범위 (로봇 그리퍼 제어값)
     actions = []
     n = len(states)
     for t in range(n):
         if t < n - 1:
             delta = _eef_delta_m_rad(eef_poses[t], eef_poses[t + 1])
-            grip_next = grips[t + 1]
+            grip_next = grips[t + 1] * 740.0  # ratio (0~1) → raw (0~740)
         else:
             delta     = [0.0] * 6
-            grip_next = grips[t]
+            grip_next = grips[t] * 740.0  # ratio (0~1) → raw (0~740)
         actions.append(delta + [grip_next])
 
     return {
@@ -361,6 +423,10 @@ def build_dataset(
     category:        str  = '',
     skip_review:     bool = False,
     category_filter: str  = '',
+    episode_start:   int  = None,
+    episode_end:     int  = None,
+    episode_list:    str  = None,
+    use_symlink:     bool = False,
 ):
     catalog = load_catalog(raw_dir)
     if catalog:
@@ -375,6 +441,23 @@ def build_dataset(
         episode_dirs = sorted(raw_dir.glob('episode_*'))
     if not episode_dirs:
         raise FileNotFoundError(f'No episode dirs in {raw_dir}')
+
+    # ── 에피소드 필터링 ───────────────────────────────────────────────────────
+    total_episodes = len(episode_dirs)
+    if episode_list:
+        indices = [int(x.strip()) for x in episode_list.split(',')]
+        episode_dirs = [episode_dirs[i] for i in indices if i < len(episode_dirs)]
+        print(f'에피소드 목록 필터: {episode_list}  →  {len(episode_dirs)}개 선택')
+    elif episode_start is not None or episode_end is not None:
+        start = episode_start or 0
+        end = episode_end if episode_end is not None else total_episodes - 1
+        episode_dirs = episode_dirs[start:end+1]
+        print(f'에피소드 범위 필터: [{start}:{end}]  →  {len(episode_dirs)}개 선택')
+    else:
+        print(f'전체 에피소드 변환: {len(episode_dirs)}개')
+
+    if not episode_dirs:
+        raise ValueError(f'필터 조건으로 선택된 에피소드가 없습니다')
 
     print(f'Found {len(episode_dirs)} bag directories\n')
 
@@ -556,8 +639,8 @@ def build_dataset(
         },
         'observation.state': {
             'dtype': 'float32',
-            'shape': [6],
-            'names': ['x_m', 'y_m', 'z_m', 'rx_rad', 'ry_rad', 'rz_rad'],
+            'shape': [7],
+            'names': ['x_m', 'y_m', 'z_m', 'rx_rad', 'ry_rad', 'rz_rad', 'gripper'],
         },
         'action': {
             'dtype': 'float32',
@@ -641,8 +724,8 @@ def build_dataset(
     print(f'  Episodes : {ep_count}  (듀얼 카메라: {dual_ep_count}개)')
     print(f'  Frames   : {total_frames}')
     print(f'  Task     : {task}')
-    print(f'  Action   : EEF delta [Δx_m,Δy_m,Δz_m,Δrx_rad,Δry_rad,Δrz_rad, grip_next]')
-    print(f'  State    : EEF pose [x_m,y_m,z_m,rx_rad,ry_rad,rz_rad] (6-dim, m/rad)')
+    print(f'  Action   : EEF delta [Δx_m,Δy_m,Δz_m,Δrx_rad,Δry_rad,Δrz_rad, grip_next] (7-dim)')
+    print(f'  State    : [x_m,y_m,z_m,rx_rad,ry_rad,rz_rad, gripper] (7-dim, EEF only)')
     print(f'  Cameras  : {camera_name}' + (f' + {camera2_name}' if has_dual_cam else ' (단일)'))
 
 
@@ -667,6 +750,14 @@ def main():
                         help='이 카테고리의 에피소드만 변환 (카탈로그 기반)')
     parser.add_argument('--skip-review',     action='store_true',
                         help='카탈로그에서 quality=review 에피소드 제외')
+    parser.add_argument('--episode-start',   type=int, default=None,
+                        help='변환할 에피소드 시작 번호 (0-indexed)')
+    parser.add_argument('--episode-end',     type=int, default=None,
+                        help='변환할 에피소드 종료 번호 (포함, 0-indexed)')
+    parser.add_argument('--episode-list',    type=str, default=None,
+                        help='특정 에피소드만 변환 (쉼표로 구분: 0,2,5)')
+    parser.add_argument('--use-symlink',     action='store_true',
+                        help='중복 에피소드를 심볼릭 링크로 저장 (용량 절약)')
     args = parser.parse_args()
 
     if args.output_dir is None:
@@ -689,6 +780,10 @@ def main():
         category=args.category,
         skip_review=args.skip_review,
         category_filter=args.category_filter,
+        episode_start=args.episode_start,
+        episode_end=args.episode_end,
+        episode_list=args.episode_list,
+        use_symlink=args.use_symlink,
     )
 
 

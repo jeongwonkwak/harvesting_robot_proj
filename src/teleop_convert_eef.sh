@@ -5,15 +5,35 @@
 # 사용법:
 #   bash src/teleop_convert_eef.sh
 #
+# 에피소드 선택 예시:
+#   1) 전체 변환:      EPISODE_MODE="all"
+#   2) 범위 변환:      EPISODE_MODE="range", EPISODE_START=0, EPISODE_END=10
+#   3) 목록 변환:      EPISODE_MODE="list", EPISODE_LIST="0,2,5,8"
+#   4) 용량 절약:      USE_SYMLINK="true" (중복 에피소드를 심볼릭 링크로 저장)
+#
 # ── 여기만 수정하세요 ────────────────────────────────────────────────────────
 
-DATASET_NAME="vla_dataset_v0.3.0"
+DATASET_NAME="vla_dataset_v0.4.2"
 
-RAW_DIR="/home/user/robot_workspace/vla_ws/data/raw/final_project/vla_dataset_v0.3.0"     # 변환할 raw bag 경로
+RAW_DIR="/home/user/robot_workspace/vla_ws/data/raw/final_project/vla_dataset_v0.4.0"     # 변환할 raw bag 경로
 MID_DIR="/home/user/robot_workspace/vla_ws/data/mid"                   # LeRobot 데이터셋 저장 경로
 LEROBOT_DIR="/home/user/robot_workspace/vla_ws/lerobot"
 
-# 선택 옵션 (필요 시 주석 해제)
+# ── 에피소드 선택 ──────────────────────────────────────────────────────────
+# EPISODE_MODE: "all" (전체) | "range" (범위) | "list" (목록)
+EPISODE_MODE="range"
+
+# EPISODE_MODE="range" 일 때: 시작 및 종료 에피소드 번호 (0-indexed)
+EPISODE_START=17
+EPISODE_END=49
+
+# EPISODE_MODE="list" 일 때: 특정 에피소드만 (쉼표로 구분)
+# EPISODE_LIST="0,2,5,8"
+
+# 용량 절약: 중복 에피소드를 심볼릭 링크로 저장 (true 추천)
+USE_SYMLINK="true"
+
+# ── 기타 필터링 옵션 ────────────────────────────────────────────────────────
 # CATEGORY_FILTER=""   # 특정 카테고리만 변환 (예: "no_occlusion")
 # SKIP_REVIEW="true"   # quality=review 에피소드 제외
 
@@ -49,31 +69,32 @@ echo "=================================================="
 echo ""
 
 # ── [1] bag → LeRobot 변환 ───────────────────────────────────────────────────
+echo "에피소드 모드: $EPISODE_MODE"
+[[ "$EPISODE_MODE" == "range" ]] && echo "에피소드 범위: $EPISODE_START ~ $EPISODE_END"
+[[ "$EPISODE_MODE" == "list" ]] && echo "선택 에피소드: ${EPISODE_LIST:-없음}"
+[[ "$USE_SYMLINK" == "true" ]] && echo "심볼릭 링크 사용: ON (용량 절약)"
+echo ""
+
 CONVERT_ARGS=(
     --raw-dir    "${RAW_DIR}"
     --output-dir "${DATASET_FULL_PATH}"
 )
 [[ -n "${CATEGORY_FILTER:-}" ]] && CONVERT_ARGS+=(--category-filter "${CATEGORY_FILTER}")
 [[ "${SKIP_REVIEW:-}" == "true" ]] && CONVERT_ARGS+=(--skip-review)
+[[ "$EPISODE_MODE" == "range" ]] && CONVERT_ARGS+=(--episode-start "${EPISODE_START}" --episode-end "${EPISODE_END}")
+[[ "$EPISODE_MODE" == "list" && -n "${EPISODE_LIST:-}" ]] && CONVERT_ARGS+=(--episode-list "${EPISODE_LIST}")
+[[ "$USE_SYMLINK" == "true" ]] && CONVERT_ARGS+=(--use-symlink)
 
 python3 "$WS_DIR/src/bag_to_lerobot_eef.py" "${CONVERT_ARGS[@]}"
-
-# ── [2] Quantile 통계 계산 및 메타데이터 추가 ─────────────────────────────────
-if [[ -d "$DATASET_FULL_PATH" ]]; then
-    echo ""
-    echo "=================================================="
-    echo " Quantile 통계 계산 및 메타데이터 추가"
-    echo " 경로: $DATASET_FULL_PATH"
-    echo "=================================================="
-    python3 "$LEROBOT_DIR/src/lerobot/scripts/augment_dataset_quantile_stats.py" \
-        --repo-id "${DATASET_NAME}" \
-        --root    "${DATASET_FULL_PATH}"
-else
-    echo "[WARNING] 데이터셋 경로를 찾을 수 없어 quantile 통계를 건너뜁니다: $DATASET_FULL_PATH"
-fi
 
 echo ""
 echo "=================================================="
 echo " 완료  →  $DATASET_FULL_PATH"
 echo " 데이터셋: $DATASET_NAME"
+echo "=================================================="
+echo ""
+echo "다음 단계:"
+echo "  1. mid/ 데이터셋 확인: $DATASET_FULL_PATH"
+echo "  2. fin/ 데이터셋 생성 및 quantile stats 추가:"
+echo "     python3 src/prepare_fin_dataset.py --src \"$DATASET_FULL_PATH\" --dst \"$MID_DIR/../fin/$DATASET_NAME\""
 echo "=================================================="

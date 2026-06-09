@@ -198,10 +198,12 @@ class DoosanController:
         pose_mm_deg: List[float],
         velocity: float = 50.0,
         acceleration: float = 100.0,
+        blocking: bool = False,
+        timeout_sec: float = 30.0,
     ) -> None:
         """
         Move EEF to absolute Cartesian pose [X,Y,Z,Rx,Ry,Rz] in mm/deg.
-        Blocking.
+        If blocking=False (default), sends command asynchronously without waiting.
         """
         if self._sim:
             self._node.get_logger().info(
@@ -218,7 +220,11 @@ class DoosanController:
         req.blend_type = 0
         req.sync_type  = 1
         fut = self._movel_cli.call_async(req)
-        if not self._wait_future(fut, timeout_sec=30.0):
+
+        if not blocking:
+            return
+
+        if not self._wait_future(fut, timeout_sec=timeout_sec):
             self._node.get_logger().warn("move_line service timed out.")
             return
         result = fut.result()
@@ -227,7 +233,7 @@ class DoosanController:
         elif not result.success:
             self._node.get_logger().warn("move_line service returned failure.")
 
-    def execute_action(self, action: np.ndarray) -> None:
+    def execute_action(self, action: np.ndarray, velocity: float = 20.0, acceleration: float = 40.0) -> None:
         """
         Execute one VLA action step.
 
@@ -236,7 +242,7 @@ class DoosanController:
           joint mode     → [dJ1..dJ6]                    (model normalised units)
         """
         if self._action_mode == "cartesian":
-            self._execute_cartesian_delta(action)
+            self._execute_cartesian_delta(action, velocity=velocity, acceleration=acceleration)
         else:
             self._execute_joint_delta(action)
 
@@ -244,7 +250,7 @@ class DoosanController:
     # Internal
     # ------------------------------------------------------------------
 
-    def _execute_cartesian_delta(self, action: np.ndarray) -> None:
+    def _execute_cartesian_delta(self, action: np.ndarray, velocity: float = 20.0, acceleration: float = 40.0) -> None:
         current = self.get_eef_pose()
         if current is None:
             self._node.get_logger().error("Cannot get EEF pose.")
@@ -264,7 +270,7 @@ class DoosanController:
         self._node.get_logger().info(
             f"  EEF  현재={pos_c}  →  목표={pos_t}  (Δ={d} mm)"
         )
-        self.move_line(target.tolist(), velocity=20.0, acceleration=40.0)
+        self.move_line(target.tolist(), velocity=velocity, acceleration=acceleration)
 
     def _execute_joint_delta(self, action: np.ndarray) -> None:
         current = self.get_joint_state()

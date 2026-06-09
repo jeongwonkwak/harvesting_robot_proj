@@ -21,7 +21,9 @@ from pathlib import Path
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image, JointState
+from std_msgs.msg import Float32, Float32MultiArray
 
 try:
     from dsr_msgs2.srv import GetCurrentPose
@@ -86,7 +88,7 @@ def _load_yolo():
 
 def _yolo_worker():
     """슬롯 0 전용 YOLO 추론 스레드. raw 프레임을 소비해 annotated JPEG을 생성."""
-    enc = [cv2.IMWRITE_JPEG_QUALITY, 80]
+    enc = [cv2.IMWRITE_JPEG_QUALITY, 50]
     while True:
         # raw 프레임 가져오기
         with _raw_frame_lock[0]:
@@ -132,7 +134,7 @@ def _make_placeholder(text: str) -> bytes:
     img[:] = (40, 40, 40)
     cv2.putText(img, text, (60, 240),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (160, 160, 160), 2, cv2.LINE_AA)
-    _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 60])
+    _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 40])
     return buf.tobytes()
 
 
@@ -184,7 +186,7 @@ class MJPEGHandler(http.server.BaseHTTPRequestHandler):
                     )
                     self.wfile.write(chunk)
                     self.wfile.flush()
-                time.sleep(1 / 25)
+                time.sleep(1 / 30)
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
 
@@ -206,10 +208,20 @@ class ROS2Bridge(Node):
         self._tcp_pose    = [0.0] * 6
         self._tcp_ready   = False
         self._tcp_pending = False
+        self._grip_ratio  = None   # teleop-api가 publish하는 그리퍼 위치 ratio(0~1)
 
         self.create_subscription(JointState, "/dsr01/joint_states",
                                  self._joint_cb, 10)
 
+        # teleop-api(teleop_api_server.py)가 publish하는 EEF pose 토픽 구독.
+        # dsr_msgs2 서비스가 없는 환경에서도 TCP 좌표를 받을 수 있다.
+        self.create_subscription(Float32MultiArray, "/dsr01/tcp_pose",
+                                 self._tcp_topic_cb, 10)
+        # 그리퍼 위치 토픽 (ratio 0=열림 ~ 1=닫힘)
+        self.create_subscription(Float32, "/gripper/position",
+                                 self._gripper_cb, 10)
+
+        # dsr_msgs2가 있으면 서비스 폴링도 병행 (정확한 TCP). 없으면 토픽만 사용.
         if _DSR_AVAILABLE:
             self._pose_cli = self.create_client(
                 GetCurrentPose, "/dsr01/system/get_current_pose"
@@ -217,10 +229,17 @@ class ROS2Bridge(Node):
             self.create_timer(1.0 / TCP_POLL_HZ, self._poll_tcp)
 
         if _CV2_AVAILABLE:
+            # 카메라 토픽은 BEST_EFFORT QoS (RealSense 기본값)
+            cam_qos = QoSProfile(
+                reliability=ReliabilityPolicy.BEST_EFFORT,
+                durability=DurabilityPolicy.VOLATILE,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+            )
             self.create_subscription(Image, CAM0_TOPIC,
-                                     lambda m: self._img_cb(m, 0), 1)
+                                     lambda m: self._img_cb(m, 0), cam_qos)
             self.create_subscription(Image, CAM1_TOPIC,
-                                     lambda m: self._img_cb(m, 1), 1)
+                                     lambda m: self._img_cb(m, 1), cam_qos)
             self.get_logger().info(
                 f"카메라 구독: {CAM0_TOPIC}, {CAM1_TOPIC}"
             )
@@ -255,6 +274,18 @@ class ROS2Bridge(Node):
         except Exception:
             pass
 
+    def _tcp_topic_cb(self, msg: Float32MultiArray):
+        """teleop-api가 publish하는 /dsr01/tcp_pose 토픽 [x,y,z,rx,ry,rz] mm/deg."""
+        if len(msg.data) >= 6:
+            with self._lock:
+                self._tcp_pose  = [round(v, 2) for v in msg.data[:6]]
+                self._tcp_ready = True
+
+    def _gripper_cb(self, msg: Float32):
+        """그리퍼 위치 ratio(0=열림 ~ 1=닫힘)."""
+        with self._lock:
+            self._grip_ratio = float(msg.data)
+
     def _img_cb(self, msg: Image, slot: int):
         # ROS2 executor 스레드 — YOLO 절대 금지. raw 저장만 하고 즉시 리턴.
         try:
@@ -270,7 +301,7 @@ class ROS2Bridge(Node):
                 with _raw_frame_lock[0]:
                     _raw_frame[0] = arr
             else:
-                _, buf = cv2.imencode(".jpg", arr, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                _, buf = cv2.imencode(".jpg", arr, [cv2.IMWRITE_JPEG_QUALITY, 50])
                 with _frame_lock[slot]:
                     _frame_jpeg[slot] = buf.tobytes()
         except Exception as e:
@@ -288,6 +319,16 @@ class ROS2Bridge(Node):
                 s["joint_angles"] = list(self._joint_deg)
                 if self._tcp_ready:
                     s["tcp_pose"] = list(self._tcp_pose)
+                if self._grip_ratio is not None:
+                    # ratio 0(열림)~1(닫힘) → 대시보드 position 100(열림)~0(닫힘)
+                    ratio = max(0.0, min(1.0, self._grip_ratio))
+                    pos_pct = round((1.0 - ratio) * 100, 1)
+                    raw_pos = round(ratio * 740)   # 0(열림)~740(닫힘) 실제 위치
+                    state = "open" if pos_pct >= 95 else ("closed" if pos_pct <= 5 else "grasping")
+                    s["gripper"] = {"position": pos_pct,
+                                    "raw_pos": raw_pos,
+                                    "state": state,
+                                    "force": s.get("gripper", {}).get("force", 30.0)}
             s["last_updated"] = datetime.now().isoformat()
             tmp = STATE_FILE.with_suffix(".tmp")
             tmp.write_text(json.dumps(s, ensure_ascii=False, indent=2))
@@ -308,7 +349,7 @@ def _usb_camera_worker(serial: str, slot: int) -> None:
         print(f"[USB{slot}] pyrealsense2 없음 — USB 폴백 불가")
         return
 
-    enc = [cv2.IMWRITE_JPEG_QUALITY, 75]
+    enc = [cv2.IMWRITE_JPEG_QUALITY, 50]
     print(f"[USB{slot}] ROS2 토픽 대기 중 ({_ROS2_WAIT_S:.0f}초)...")
     time.sleep(_ROS2_WAIT_S)
 
@@ -327,20 +368,28 @@ def _usb_camera_worker(serial: str, slot: int) -> None:
             cfg = rs.config()
             if serial:
                 cfg.enable_device(serial)
-            cfg.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+            # D455(slot0) 는 depth 동시 활성화 없으면 color 프레임이 나오지 않음
+            if slot == 0:
+                cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+            cfg.enable_stream(rs.stream.color, 640, 480, rs.format.rgb8, 30)
             pipeline = rs.pipeline()
             pipeline.start(cfg)
-            print(f"[USB{slot}] RealSense 연결 성공")
+            print(f"[USB{slot}] RealSense 연결 성공 — 워밍업 중...")
+            # 카메라 안정화 대기 (D455 등은 첫 프레임까지 시간이 더 필요)
+            for _ in range(60):
+                try: pipeline.wait_for_frames(timeout_ms=500)
+                except Exception: pass
+            print(f"[USB{slot}] 워밍업 완료")
 
             while True:
                 # ROS2 토픽이 다시 살아나면 USB 닫기
                 if time.time() - _frame_last_ros2[slot] < 2.0:
                     print(f"[USB{slot}] ROS2 토픽 복구 — USB 닫기")
                     break
-                fr = pipeline.wait_for_frames(timeout_ms=2000)
+                fr = pipeline.wait_for_frames(timeout_ms=5000)
                 cf = fr.get_color_frame()
                 if cf:
-                    arr = np.asanyarray(cf.get_data()).copy()
+                    arr = cv2.cvtColor(np.asanyarray(cf.get_data()).copy(), cv2.COLOR_RGB2BGR)
                     if slot == 0:
                         # YOLO 워커 스레드에 위임 (블로킹 금지)
                         with _raw_frame_lock[0]:
@@ -368,13 +417,17 @@ def main():
     threading.Thread(target=_yolo_worker, daemon=True).start()
     time.sleep(0.5)
 
-    # ROS2 토픽 없을 때 USB 폴백
-    if CAM0_SERIAL:
-        threading.Thread(target=_usb_camera_worker,
-                         args=(CAM0_SERIAL, 0), daemon=True).start()
-    if CAM1_SERIAL:
-        threading.Thread(target=_usb_camera_worker,
-                         args=(CAM1_SERIAL, 1), daemon=True).start()
+    # ROS2 토픽 없을 때 USB 폴백 (USB_FALLBACK=false 로 비활성화 가능)
+    usb_fallback = os.environ.get('USB_FALLBACK', 'true').lower() != 'false'
+    if usb_fallback:
+        if CAM0_SERIAL:
+            threading.Thread(target=_usb_camera_worker,
+                             args=(CAM0_SERIAL, 0), daemon=True).start()
+        if CAM1_SERIAL:
+            threading.Thread(target=_usb_camera_worker,
+                             args=(CAM1_SERIAL, 1), daemon=True).start()
+    else:
+        print("[Bridge] USB 폴백 비활성화 — ROS2 토픽만 사용")
 
     rclpy.init()
     node     = ROS2Bridge()

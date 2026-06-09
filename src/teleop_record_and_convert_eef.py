@@ -45,10 +45,10 @@ YOLO_MODEL     = str(WS_DIR / 'models/strawberry_yolo26m_unified/weights/last.pt
 GRIPPER_PORT   = '/dev/ttyUSB0'
 ROBOT_ID       = 'dsr01'
 CONF_THRESHOLD = 0.3
-STEP_MM        = 60.0
-STEP_DEG       = 20.0
-VELOCITY       = 3000.0
-ACCELERATION   = 800.0
+STEP_MM        = 20.0
+STEP_DEG       = 15.0
+VELOCITY       = 5000.0
+ACCELERATION   = 500.0
 RECORD_DIR     = str(WS_DIR / 'src/teleop_records')
 RAW_DIR        = str(WS_DIR / 'data/raw/final_project')
 DATASET_NAME   = 'vla_dataset_v0.3.0'
@@ -59,17 +59,18 @@ CAMERA2_TOPIC       = '/camera2/camera2/color/image_raw'
 # 두 카메라가 동시에 연결되어 있을 때는 반드시 시리얼 번호를 지정해야 함
 SERIAL_CAM1         = ''   # YOLO 인식 카메라 시리얼 (예: '123622270786')
 SERIAL_CAM2         = ''   # 전경 카메라 시리얼     (예: '215122253389')
-DEFAULT_TASK        = 'Approach the red object closely and pick it up.'
+DEFAULT_TASK        = 'Grasp the strawberry stem and pick it.'
 GRIPPER_CLOSE_POS   = 500
+GRIPPER_HOME_POS    = 600
 GRIPPER_MAX_POS     = 740
 
 # ── 홈 포즈 ── TCP [x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg] ──────────────
 # NW=top_left / NE=top_right / SE=bottom_right / SW=bottom_left
 HOME_POSES = {
-    'top_right':    [ 285.75, 347.14, 730.58,  85.94, 65.09, -88.59],  # NE
-    'top_left':     [-245.34, 373.90, 741.39,  86.46, 66.60, -88.80],  # NW
-    'bottom_right': [ 284.91, 346.35, 342.92,  86.37, 64.04, -89.22],  # SE
-    'bottom_left':  [-248.59, 366.73, 348.70,  86.47, 64.81, -88.15],  # SW
+    'top_right':    [ 314.90, 279.89, 883.40,  89.90, 86.29, -89.62],  # NE
+    'top_left':     [-225.46, 338.93, 902.31,  88.42, 87.31, -89.88],  # NW
+    'bottom_right': [ 312.61, 302.83, 529.32,  89.90, 86.29, -89.62],  # SE
+    'bottom_left':  [-247.70, 317.34, 533.88,  87.75, 86.31, -89.49],  # SW
 }
 HOME_POSE_DEFAULT = 'top_left'
 
@@ -127,6 +128,10 @@ class TeleopRecordAndConvertEEF:
         self._yolo_boxes = []
         threading.Thread(target=self._yolo_worker, daemon=True).start()
 
+        # 캐시된 EEF pose (백그라운드에서 갱신 → 키 입력 시 즉시 사용)
+        self._eef_cache      = None
+        self._eef_cache_lock = threading.Lock()
+
         # 상태 퍼블리시 백그라운드 워커 (20Hz, 메인 루프 비차단)
         self._publish_running = True
         threading.Thread(target=self._publish_worker, daemon=True).start()
@@ -149,7 +154,8 @@ class TeleopRecordAndConvertEEF:
 
     # ── 인프라 관리 ────────────────────────────────────────────────────────────
 
-    def _start_infra(self):
+    def _start_cameras(self):
+        """카메라 프로세스를 시작하고 두 카메라 모두 준비될 때까지 대기."""
         # ── 카메라 1: YOLO 인식 (camera_namespace=camera) ────────────────────
         rs1_cmd = [
             'ros2', 'launch', 'realsense2_camera', 'rs_launch.py',
@@ -192,6 +198,8 @@ class TeleopRecordAndConvertEEF:
             time.sleep(0.2)
         self._logger.info('두 카메라 준비 완료.')
 
+    def _start_bag_record(self):
+        """bag 녹화 프로세스 시작."""
         bag = subprocess.Popen([
             'ros2', 'bag', 'record',
             '--qos-profile-overrides-path', QOS_FILE,
@@ -204,7 +212,7 @@ class TeleopRecordAndConvertEEF:
         ])
         self._procs.append(bag)
         time.sleep(1)
-        self._logger.info('인프라 준비 완료.')
+        self._logger.info('bag 녹화 시작.')
 
     def _stop_infra(self):
         for p in reversed(self._procs):
@@ -247,11 +255,15 @@ class TeleopRecordAndConvertEEF:
                 pass
 
     def _publish_worker(self):
-        """20Hz로 EEF pose + 그리퍼 상태를 퍼블리시. 메인 루프와 완전히 분리."""
+        """20Hz로 EEF pose + 그리퍼 상태를 퍼블리시 & 캐시 갱신. 메인 루프 비차단."""
         interval = 1.0 / 20.0
         while self._publish_running:
             try:
-                self._publish_state()
+                eef = self._robot.get_eef_pose()
+                if eef is not None:
+                    with self._eef_cache_lock:
+                        self._eef_cache = eef
+                self._publish_state(eef)
             except Exception:
                 pass
             time.sleep(interval)
@@ -261,9 +273,10 @@ class TeleopRecordAndConvertEEF:
     def _move_robot_async(self, dx=0, dy=0, dz=0, drx=0, dry=0, drz=0):
         if self._is_moving:
             return
-        # 스레드 시작 전에 플래그 설정 → 레이스 컨디션 방지
         self._is_moving = True
-        eef = self._robot.get_eef_pose()
+        # 캐시된 pose 즉시 읽기 (서비스 호출 없음 → 지연 없음)
+        with self._eef_cache_lock:
+            eef = self._eef_cache
         if eef is None:
             self._is_moving = False
             return
@@ -294,18 +307,15 @@ class TeleopRecordAndConvertEEF:
         self._gripper_target = pos
         threading.Thread(target=lambda: self._gripper.move_to(pos), daemon=True).start()
 
-    def _publish_state(self):
+    def _publish_state(self, eef=None):
         """그리퍼 + EEF pose 동시 퍼블리시."""
-        # 그리퍼
         grip_msg = Float32()
         grip_msg.data = float(self._gripper.get_position())
         self._gripper_pub.publish(grip_msg)
 
-        # EEF pose
-        eef = self._robot.get_eef_pose()
         if eef is not None:
             eef_msg = Float32MultiArray()
-            eef_msg.data = eef.tolist()   # [x,y,z,rx,ry,rz]
+            eef_msg.data = eef.tolist()
             self._eef_pub.publish(eef_msg)
 
     def _move_to_home(self) -> None:
@@ -315,44 +325,32 @@ class TeleopRecordAndConvertEEF:
             time.sleep(0.1)
         print(f'[홈] {self._home_pose_name} → {[round(v, 2) for v in self._home_pose]}')
         self._robot.move_line(self._home_pose, velocity=VELOCITY, acceleration=ACCELERATION)
-        self._move_gripper_to_async(600)
-        # 그리퍼 + 로봇이 완전히 정지할 때까지 대기
-        time.sleep(1.0)
+        self._move_gripper_to_async(GRIPPER_HOME_POS)
+        # DSR sync_type=1은 커맨드 수락 시점에 응답하므로, 로봇이 물리적으로 정지할 때까지 충분히 대기
+        time.sleep(3.0)
 
     # ── 메인 루프 ──────────────────────────────────────────────────────────────
 
     def run(self):
-        # ── 녹화 시작 전 홈 포즈 이동 ─────────────────────────────────────────
+        # ── 홈 포즈 이동 → 정지 ───────────────────────────────────────────────
         print('\n================================================')
         print(f' 홈 포즈로 이동 중 (녹화 시작 전) : {self._home_pose_name}')
         print('================================================')
         self._move_to_home()
 
-        print('\n홈 포즈 도달 완료. 녹화를 시작합니다...')
-        self._start_infra()
+        # ── 카메라 시작 + 준비 대기 ───────────────────────────────────────────
+        print('\n홈 포즈 도달 완료. 카메라를 시작합니다...')
+        self._start_cameras()
 
+        # ── 화면 켜짐 ─────────────────────────────────────────────────────────
         WIN  = 'YOLO 인식 카메라  (Esc → 홈 복귀 & 종료)'
         WIN2 = '전경 카메라'
         cv2.namedWindow(WIN,  cv2.WINDOW_NORMAL)
         cv2.namedWindow(WIN2, cv2.WINDOW_NORMAL)
 
-        waiting = np.zeros((480, 640, 3), dtype=np.uint8)
-        cv2.putText(waiting, 'Waiting for cameras...', (100, 240),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2, cv2.LINE_AA)
-
-        deadline = time.time() + 20.0
-        while not (self._camera.ready and self._camera2.ready):
-            cv2.imshow(WIN, waiting)
-            cv2.imshow(WIN2, waiting)
-            if cv2.waitKey(100) & 0xFF == 27:
-                cv2.destroyAllWindows()
-                self._stop_infra()
-                return
-            if time.time() > deadline:
-                self._logger.error('카메라 타임아웃.')
-                cv2.destroyAllWindows()
-                self._stop_infra()
-                return
+        # ── bag 녹화 시작 ─────────────────────────────────────────────────────
+        print('\n화면 켜짐. bag 녹화를 시작합니다...')
+        self._start_bag_record()
 
         self._logger.info('텔레오퍼레이션 시작.')
         print('\n================ 조작 방법 ================')
@@ -362,7 +360,7 @@ class TeleopRecordAndConvertEEF:
         print(' [J]/[L]   : Rx (+/-)')
         print(' [I]/[K]   : Ry (+/-)')
         print(' [N]/[M]   : Rz (+/-)')
-        print(' [O]/[P]   : 그리퍼 완전 열기/닫기(500)')
+        print(' [O]/[P]/[[] : 그리퍼 완전 열기(0) / 파지(500) / 홈(600)')
         print(' [0~9...]  : 그리퍼 위치 직접 입력 → Enter 전송')
         print(' [Space]   : 현재 EEF pose·그리퍼 상태 CSV 기록')
         print(' [Esc]     : 홈 포즈 복귀 → 녹화 종료')
@@ -424,7 +422,14 @@ class TeleopRecordAndConvertEEF:
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
                 cv2.imshow(WIN2, frame2)
 
-            key = cv2.waitKey(33) & 0xFF  # ~30fps, 자동 반복 억제
+            key = cv2.waitKey(1) & 0xFF
+            # 그리퍼 직접 입력 모드가 아닐 때 버퍼에 쌓인 키를 비워 입력 지연 제거
+            if not self._gripper_input:
+                while True:
+                    k = cv2.waitKey(1) & 0xFF
+                    if k == 0xFF:
+                        break
+                    key = k
 
             if self._gripper_input:
                 if ord('0') <= key <= ord('9'):
@@ -457,10 +462,12 @@ class TeleopRecordAndConvertEEF:
             elif key in (ord('m'), ord('M')): self._move_robot_async(drz=-STEP_DEG)
             elif key in (ord('o'), ord('O')): self._open_gripper_async()
             elif key in (ord('p'), ord('P')): self._close_gripper_async()
+            elif key == ord('['): self._move_gripper_to_async(GRIPPER_HOME_POS)
             elif ord('0') <= key <= ord('9'):
                 self._gripper_input = chr(key)
             elif key == ord(' '):
-                eef = self._robot.get_eef_pose()
+                with self._eef_cache_lock:
+                    eef = self._eef_cache
                 g   = self._gripper.get_position()
                 if eef is not None:
                     ts  = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
@@ -481,19 +488,14 @@ class TeleopRecordAndConvertEEF:
             daemon=True,
         ).start()
 
-        loop_start = time.time()
-        while not home_done.is_set() or time.time() - loop_start < 3.0:
+        while not home_done.is_set():
             self._camera.grab()
             rgb, _ = self._camera.get_images()
             if rgb is not None:
                 frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-                if home_done.is_set():
-                    label, color = '홈 복귀 완료 — 녹화 종료 중...', (0, 200, 200)
-                else:
-                    label, color = '홈 복귀 중... (녹화 중)', (0, 255, 100)
                 cv2.rectangle(frame, (0, 0), (frame.shape[1], 44), (0, 80, 0), -1)
-                cv2.putText(frame, label, (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2, cv2.LINE_AA)
+                cv2.putText(frame, '홈 복귀 중... (녹화 중)', (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 100), 2, cv2.LINE_AA)
                 cv2.imshow(WIN, frame)
             self._camera2.grab()
             rgb2, _ = self._camera2.get_images()
@@ -501,6 +503,8 @@ class TeleopRecordAndConvertEEF:
                 cv2.imshow(WIN2, cv2.cvtColor(rgb2, cv2.COLOR_RGB2BGR))
             cv2.waitKey(30)
 
+        # ── 홈 포즈 정지 확인 → 화면 끄고 녹화 종료 ─────────────────────────
+        print('\n홈 포즈 복귀 완료. 화면을 끄고 녹화를 종료합니다...')
         cv2.destroyAllWindows()
         self._publish_running = False
         print('\n인프라 종료 중...')

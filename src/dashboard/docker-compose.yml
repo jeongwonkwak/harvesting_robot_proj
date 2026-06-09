@@ -1,5 +1,57 @@
 services:
 
+  # ── ROS2 카메라 노드: RealSense 카메라 자동 시작 ────────────────────────────────
+  harvest-camera:
+    build:
+      context: .
+      dockerfile: Dockerfile.camera
+    container_name: harvest-camera
+    network_mode: "host"
+    ipc: "host"
+    pid: "host"
+    privileged: true
+    volumes:
+      - /dev:/dev
+      - /dev/bus/usb:/dev/bus/usb
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - PYTHONUNBUFFERED=1
+      - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+    restart: unless-stopped
+
+  # ── 텔레오퍼레이션 API: 로봇 제어 + bag 녹화 관리 ────────────────────────────
+  teleop-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.teleop
+    container_name: harvest-teleop-api
+    network_mode: "host"
+    # ROS2(FastDDS)는 같은 호스트 내 대용량 데이터를 공유 메모리(SHM)로 전송하므로
+    # 호스트와 IPC 네임스페이스를 공유해야 토픽 데이터를 받을 수 있다.
+    ipc: "host"
+    pid: "host"
+    privileged: true
+    volumes:
+      - /opt/ros/humble:/opt/ros/humble:ro
+      # install/ 안 .py 파일이 build/ 경로를 심볼릭 링크로 참조하므로 둘 다 마운트
+      - /home/user/robot_workspace/doosan_ws/install:/home/user/robot_workspace/doosan_ws/install:ro
+      - /home/user/robot_workspace/doosan_ws/build:/home/user/robot_workspace/doosan_ws/build:ro
+      - /home/user/robot_workspace/vla_ws:/vla_ws
+      # realsense2_camera 노드가 /dev/video* 장치에 접근하기 위해 필요
+      - /dev:/dev
+      # harvest_state.json (ros2_bridge가 쓰고 teleop_api가 읽음)
+      - ./data:/data
+    environment:
+      - WS_DIR=/vla_ws
+      - RAW_DIR=/vla_ws/data/raw/final_project/vla_dataset_v0.3.0
+      - HARVEST_STATE_FILE=/data/harvest_state.json
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - PYTHONUNBUFFERED=1
+      # FastDDS 공유메모리(SHM) 전송은 컨테이너-호스트 경계에서 데이터가 전달되지 않음.
+      # UDP 전송으로 강제해야 호스트의 카메라/로봇 토픽을 받을 수 있다.
+      - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+    restart: unless-stopped
+
   # ── ROS2 브리지: 상태파일 + MJPEG 서버 + USB 폴백 ────────────────────────────
   ros2-bridge:
     build:
@@ -7,6 +59,8 @@ services:
       dockerfile: Dockerfile.bridge
     container_name: harvest-ros2-bridge
     network_mode: "host"
+    ipc: "host"
+    pid: "host"
     privileged: true
     volumes:
       - ./data:/data
@@ -24,7 +78,14 @@ services:
       - YOLO_MODEL=/models/strawberry_yolo26m_unified/weights/last.pt
       - YOLO_CONF=0.3
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - PYTHONUNBUFFERED=1
+      # 카메라는 harvest-camera 컨테이너에서 실행하므로 USB 직접 접근 비활성화
+      - USB_FALLBACK=false
+      # FastDDS SHM은 컨테이너-호스트 경계에서 전달 안 됨 → UDP 강제
+      - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
     restart: unless-stopped
+    depends_on:
+      - harvest-camera
 
   # ── 웹 대시보드 ───────────────────────────────────────────────────────────────
   harvest-dashboard:
@@ -37,8 +98,45 @@ services:
       - HARVEST_STATE_FILE=/data/harvest_state.json
       - CAMERA_URL_0=http://localhost:8766/cam0
       - CAMERA_URL_1=http://localhost:8766/cam1
+      - TELEOP_API_HOST=localhost
+      - TELEOP_API_PORT=8767
+      - PYTHONUNBUFFERED=1
     volumes:
+      - ./harvest_dashboard.py:/app/harvest_dashboard.py
       - ./data:/data
+      - /home/user/robot_workspace/vla_ws/logs:/home/user/robot_workspace/vla_ws/logs
     restart: unless-stopped
     depends_on:
       - ros2-bridge
+      - teleop-api
+
+  # ── 센서 모니터링 (Streamlit) ─────────────────────────────────────────────────
+  bag-monitor:
+    image: python:3.10-slim
+    container_name: bag-monitor
+    network_mode: "host"
+    working_dir: /app
+    volumes:
+      - /home/user/robot_workspace/vla_ws:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: sh -c "pip install --no-cache-dir streamlit plotly pandas -q && streamlit run src/bag_monitor.py --logger.level=error --client.showErrorDetails=false --server.port=8501 --server.address=localhost"
+    restart: unless-stopped
+    depends_on:
+      - harvest-dashboard
+
+  # ── 통합 대시보드 ─────────────────────────────────────────────────────────────
+  integrated-dashboard:
+    image: python:3.10-slim
+    container_name: integrated-dashboard
+    network_mode: "host"
+    working_dir: /app
+    volumes:
+      - /home/user/robot_workspace/vla_ws:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: sh -c "python3 src/integrated_dashboard.py"
+    restart: unless-stopped
+    depends_on:
+      - harvest-dashboard
+      - bag-monitor

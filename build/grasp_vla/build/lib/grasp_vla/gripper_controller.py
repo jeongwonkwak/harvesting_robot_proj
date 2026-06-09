@@ -62,8 +62,10 @@ class GripperController:
         # ROS 2 모드 우선
         if self._ros_node is not None:
             from std_srvs.srv import Trigger
-            self._open_cli = self._ros_node.create_client(Trigger, f"/{self._robot_id}/gripper/open")
+            from std_msgs.msg import Int32
+            self._open_cli  = self._ros_node.create_client(Trigger, f"/{self._robot_id}/gripper/open")
             self._close_cli = self._ros_node.create_client(Trigger, f"/{self._robot_id}/gripper/close")
+            self._pos_cmd_pub = self._ros_node.create_publisher(Int32, f"/{self._robot_id}/gripper/position_cmd", 10)
             self._connected = True
             print(f"[INFO] Gripper connected via ROS2 ({self._robot_id}).")
             return
@@ -137,12 +139,28 @@ class GripperController:
         self._set_position(target_pos)
         time.sleep(wait)
 
+    def move_to(self, position: int) -> None:
+        """Move gripper to absolute position (0 = open, 740 = closed)."""
+        position = max(0, min(_POS_CLOSE, position))
+        self._pos_ratio = position / _POS_CLOSE
+        if self._ros_node is not None:
+            from std_msgs.msg import Int32
+            msg = Int32()
+            msg.data = position
+            self._pos_cmd_pub.publish(msg)
+            return
+        self._set_current(_GRASP_CURRENT_MA)
+        self._set_position(position)
+
     def set_ratio(self, ratio: float) -> None:
         """Set gripper position by ratio: 0.0 = open, 1.0 = closed."""
         ratio = max(0.0, min(1.0, ratio))
         if self._ros_node is not None:
             self._pos_ratio = ratio
-            # Here we might need a position command topic if supported, but skipping for now
+            from std_msgs.msg import Int32
+            msg = Int32()
+            msg.data = int(ratio * _POS_CLOSE)
+            self._pos_cmd_pub.publish(msg)
             return
         self._set_position(int(ratio * _POS_CLOSE))
 

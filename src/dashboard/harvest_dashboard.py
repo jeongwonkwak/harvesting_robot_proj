@@ -8,14 +8,23 @@ CLI: --update start_harvest|harvest_success|harvest_fail|damage|reset
      --joints J1,J2,J3,J4,J5,J6  --tcp X,Y,Z,RX,RY,RZ
      --gripper POS[,FORCE]  --target N
 """
-import argparse, asyncio, json, math, os, random, sys, threading, time
+import argparse, asyncio, base64, json, math, os, random, sys, threading, time, urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+try: import numpy as np
+except ImportError: np = None
 
 # ── 상태 파일 ──────────────────────────────────────────────────────────────────
 STATE_FILE   = Path(os.environ.get('HARVEST_STATE_FILE', '/tmp/harvest_state.json'))
+TELEOP_API_HOST = os.environ.get('TELEOP_API_HOST', 'localhost')
+TELEOP_API_PORT = os.environ.get('TELEOP_API_PORT', '8767')
+TELEOP_API_URL = f'http://{TELEOP_API_HOST}:{TELEOP_API_PORT}'
+VLA_API_URL = os.environ.get('VLA_API_URL', 'http://192.168.50.79:18003')
+VLA_LOG_DIR = Path('/home/user/robot_workspace/vla_ws/logs/vla_inference')
 MAX_MESSAGES = 20
+ROBOT_URDF_PATH = Path('/home/user/robot_workspace/doosan_ws/src/doosan-robot2/dsr_description2/urdf/e0509.urdf')
+JOINT_SAFETY_MARGIN = 0.90  # 관절 한계의 90%까지만 허용 (보수적)
 
 DEFAULT_STATE: dict = {
     "session_start":         None,
@@ -26,6 +35,8 @@ DEFAULT_STATE: dict = {
     "current_harvest_start": None,
     "messages":              [],
     "status":                "idle",
+    "robot_ready":           False,  # teleop_api에서 주기적으로 업데이트됨
+    "robot_error":           "",     # 로봇 연결 오류 메시지
     "joint_angles":          [0.0]*6,
     "tcp_pose":              [0.0]*6,
     "target_count":          15,
@@ -53,8 +64,11 @@ def _load() -> dict:
 
 def _save(s: dict) -> None:
     s["last_updated"] = datetime.now().isoformat()
+    # DEFAULT_STATE의 모든 키를 포함하도록 병합
+    out = DEFAULT_STATE.copy()
+    out.update(s)
     tmp = STATE_FILE.with_suffix('.tmp')
-    tmp.write_text(json.dumps(s, ensure_ascii=False, indent=2))
+    tmp.write_text(json.dumps(out, ensure_ascii=False, indent=2))
     os.replace(tmp, STATE_FILE)
 
 def _push_msg(s: dict, text: str, level: str = "info") -> None:
@@ -69,6 +83,200 @@ def _detect_failure_type(text: str) -> str:
     if any(k in t for k in ['파지 실패','그리퍼','닫힘 실패']):     return 'grasp'
     if any(k in t for k in ['감지','미성숙','탐지']):               return 'detection'
     return 'other'
+
+# ── Joint Limit 관련 함수 ────────────────────────────────────────────────────────
+def _parse_joint_limits_from_urdf() -> Optional[dict]:
+    """URDF 파일에서 joint limits를 파싱합니다."""
+    if not ROBOT_URDF_PATH.exists():
+        print(f"[URDF] 파일 없음: {ROBOT_URDF_PATH}")
+        return None
+    try:
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(str(ROBOT_URDF_PATH))
+        root = tree.getroot()
+
+        joint_names = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
+        limits = {}
+
+        for joint_elem in root.findall('joint'):
+            joint_name = joint_elem.get('name')
+            if joint_name not in joint_names:
+                continue
+
+            limit_elem = joint_elem.find('limit')
+            if limit_elem is not None:
+                lower = float(limit_elem.get('lower', '-6.2832'))  # 기본값: -2π
+                upper = float(limit_elem.get('upper', '6.2832'))   # 기본값: 2π
+                limits[joint_name] = {
+                    'lower_rad': lower,
+                    'upper_rad': upper,
+                    'lower_deg': math.degrees(lower),
+                    'upper_deg': math.degrees(upper),
+                }
+
+        if len(limits) == 6:
+            print(f"[URDF] Joint limits 읽음: {len(limits)}개 관절")
+            return limits
+        else:
+            print(f"[URDF] 예상과 다른 관절 수: {len(limits)}")
+            return None
+    except Exception as e:
+        print(f"[URDF] 파싱 오류: {e}")
+        return None
+
+# 시작 시 joint limits 로드
+_JOINT_LIMITS = _parse_joint_limits_from_urdf()
+
+def _get_safe_joint_limits() -> dict:
+    """Safety margin이 적용된 joint limits를 반환합니다."""
+    if _JOINT_LIMITS is None:
+        return {}
+
+    safe_limits = {}
+    for joint_name, limits in _JOINT_LIMITS.items():
+        lower = limits['lower_rad']
+        upper = limits['upper_rad']
+        margin = (upper - lower) * (1 - JOINT_SAFETY_MARGIN) / 2
+        safe_limits[joint_name] = {
+            'lower_rad': lower + margin,
+            'upper_rad': upper - margin,
+            'lower_deg': math.degrees(lower + margin),
+            'upper_deg': math.degrees(upper - margin),
+        }
+    return safe_limits
+
+def _validate_joint_angles(angles: list, return_details: bool = False) -> tuple[bool, str]:
+    """
+    관절각도가 안전 범위 내인지 확인합니다.
+
+    Returns:
+        (is_valid, error_message)
+    """
+    if _JOINT_LIMITS is None:
+        return True, ""  # URDF를 읽지 못하면 체크 스킵
+
+    if len(angles) < 6:
+        return False, "관절각도 부족: 최소 6개 필요"
+
+    joint_names = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
+    safe_limits = _get_safe_joint_limits()
+    violations = []
+
+    for i, (joint_name, angle_deg) in enumerate(zip(joint_names, angles[:6])):
+        if joint_name not in safe_limits:
+            continue
+
+        limits = safe_limits[joint_name]
+        if angle_deg < limits['lower_deg'] or angle_deg > limits['upper_deg']:
+            violations.append(
+                f"{joint_name}={angle_deg:.1f}° (범위: {limits['lower_deg']:.1f}~{limits['upper_deg']:.1f}°)"
+            )
+
+    if violations:
+        msg = "🚫 Joint limit 초과: " + ", ".join(violations)
+        return False, msg
+
+    return True, ""
+
+# IK 계산을 위한 placo 초기화
+try:
+    import placo as _placo_ik
+    _ik_available = True
+except ImportError:
+    _placo_ik = None
+    _ik_available = False
+    print("[IK] placo 라이브러리 없음 — TCP command 검증 비활성화")
+
+_robot_ik = None
+_robot_ik_lock = threading.Lock()
+
+def _get_ik_solver():
+    """IK 솔버를 초기화하거나 기존 인스턴스를 반환합니다."""
+    global _robot_ik
+    if not _ik_available or not ROBOT_URDF_PATH.exists():
+        return None
+
+    with _robot_ik_lock:
+        if _robot_ik is None:
+            try:
+                robot = _placo_ik.RobotWrapper(str(ROBOT_URDF_PATH))
+                _robot_ik = {
+                    'robot': robot,
+                    'solver': _placo_ik.KinematicsSolver(robot),
+                }
+                _robot_ik['solver'].mask_fbase(True)
+                print("[IK] IK 솔버 초기화 완료")
+            except Exception as e:
+                print(f"[IK] 초기화 오류: {e}")
+                return None
+        return _robot_ik
+
+def _tcp_to_joint_angles(tcp_pose: list, current_joints: list = None) -> Optional[list]:
+    """
+    TCP 좌표를 joint angles로 변환합니다 (IK).
+
+    Args:
+        tcp_pose: [X, Y, Z, RX, RY, RZ] (mm/deg)
+        current_joints: 초기값으로 사용할 현재 joint angles (도)
+
+    Returns:
+        joint angles (도) 또는 None if IK 실패
+    """
+    if not _ik_available:
+        return None
+
+    ik_data = _get_ik_solver()
+    if ik_data is None:
+        return None
+
+    try:
+        from scipy.spatial.transform import Rotation
+
+        # TCP 좌표를 4x4 변환 행렬로 변환
+        tcp_pos = np.array(tcp_pose[:3], dtype=float)
+        tcp_rot_deg = np.array(tcp_pose[3:6], dtype=float)
+
+        # 오일러 각 (ZYX 순서)
+        rot_rad = np.deg2rad(tcp_rot_deg)
+        rotation = Rotation.from_euler('zyx', rot_rad, degrees=False)
+        R = rotation.as_matrix()
+
+        T_target = np.eye(4)
+        T_target[:3, :3] = R
+        T_target[:3, 3] = tcp_pos
+
+        # 초기값 설정
+        robot = ik_data['robot']
+        solver = ik_data['solver']
+        joint_names = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
+
+        if current_joints is not None and len(current_joints) >= 6:
+            init_rad = np.deg2rad(current_joints[:6])
+        else:
+            init_rad = np.zeros(6)
+
+        for i, joint_name in enumerate(joint_names):
+            robot.set_joint(joint_name, init_rad[i])
+
+        # 프레임 타스크 설정
+        tip_frame = solver.add_frame_task("link_6", np.eye(4))
+        tip_frame.T_world_frame = T_target
+        tip_frame.configure("link_6", "soft", 1.0)
+
+        # IK 해결
+        solver.solve(True)
+        robot.update_kinematics()
+
+        # 결과 추출
+        result_rad = []
+        for joint_name in joint_names:
+            result_rad.append(robot.get_joint(joint_name))
+
+        result_deg = np.rad2deg(result_rad)
+        return result_deg.tolist()
+    except Exception as e:
+        print(f"[IK] 계산 오류: {e}")
+        return None
 
 # ── 카메라 ────────────────────────────────────────────────────────────────────
 _cam_locks    = [threading.Lock(), threading.Lock()]
@@ -87,31 +295,42 @@ def _camera_worker(camera_id: int = 0, slot: int = 0, serial: str = '',
     enc   = [cv2.IMWRITE_JPEG_QUALITY, 75]
 
     # ── URL 소스 (ros2_bridge MJPEG 스트림) ──────────────────────────────────
+    # cv2.VideoCapture는 MJPEG URL에서 FATAL 크래시 발생 → urllib 직접 파싱
     if url:
+        import urllib.request
+        import numpy as np
         print(f"[Camera{slot}] URL 소스 사용: {url}")
         _cam_infos[slot]["source"] = f"bridge:{url}"
         fc, ft = 0, time.time()
         while True:
-            cap = None
             try:
-                cap = cv2.VideoCapture(url)
-                if not cap.isOpened():
-                    raise RuntimeError("스트림 열기 실패")
+                req = urllib.request.urlopen(url, timeout=10)
+                buf = b''
                 while True:
-                    ret, frame = cap.read()
-                    if not ret:
+                    chunk = req.read(4096)
+                    if not chunk:
                         break
-                    _, buf = cv2.imencode('.jpg', frame, enc)
-                    with _cam_locks[slot]: _cam_jpegs[slot] = buf.tobytes()
-                    fc += 1
-                    now = time.time()
-                    if now - ft >= 1.0:
-                        with _cam_fps_lock: _cam_fps_v[slot] = fc / (now - ft)
-                        fc, ft = 0, now
+                    buf += chunk
+                    # JPEG 프레임 추출 (SOI=0xFFD8, EOI=0xFFD9)
+                    while True:
+                        a = buf.find(b'\xff\xd8')
+                        b = buf.find(b'\xff\xd9', a + 2) if a != -1 else -1
+                        if a == -1 or b == -1:
+                            break
+                        jpg = buf[a:b + 2]
+                        buf = buf[b + 2:]
+                        arr = np.frombuffer(jpg, dtype=np.uint8)
+                        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                        if frame is not None:
+                            _, out = cv2.imencode('.jpg', frame, enc)
+                            with _cam_locks[slot]: _cam_jpegs[slot] = out.tobytes()
+                            fc += 1
+                            now = time.time()
+                            if now - ft >= 1.0:
+                                with _cam_fps_lock: _cam_fps_v[slot] = fc / (now - ft)
+                                fc, ft = 0, now
             except Exception as e:
                 print(f"[Camera{slot}] URL 읽기 오류: {e}, 3s 후 재시도")
-            finally:
-                if cap: cap.release()
             time.sleep(3)
         return  # URL 모드에서는 여기까지만
 
@@ -356,13 +575,15 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
 
 /* BOTTOM ROW */
 .bot{flex:1;min-height:0;display:grid;
-  grid-template-columns:185px 295px 1fr 190px;
+  grid-template-columns:185px 295px 1fr;
+  grid-template-rows:auto 0.6fr 1.4fr;
   gap:5px;overflow:hidden}
 
-/* GRAPH BANNER (4열 상단) */
-.bg-panel{grid-column:1/5;grid-row:1;
+/* GRAPH BANNER */
+.bg-panel{grid-column:1/-1;grid-row:1;
   background:var(--card);border:1px solid var(--border);border-radius:var(--r);
-  box-shadow:var(--sh);display:flex;overflow:hidden;flex-shrink:0}
+  box-shadow:var(--sh);display:flex;overflow:hidden;flex-shrink:0;
+  height:auto;}
 .bg-sec{padding:8px 12px;display:flex;flex-direction:column;justify-content:center;
   gap:3px;overflow:hidden;min-width:0}
 .bg-sec-lbl{font-size:9px;font-weight:700;color:var(--t3);text-transform:uppercase;
@@ -433,7 +654,7 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
 .snap-item.fail .snap-badge{background:var(--red);color:#fff}
 .snap-empty{font-size:9px;color:var(--t3);white-space:nowrap;padding:0 4px}
 .panel{background:var(--card);border:1px solid var(--border);border-radius:var(--r);
-  box-shadow:var(--sh);display:flex;flex-direction:column;overflow:hidden;min-height:0}
+  box-shadow:var(--sh);display:flex;flex-direction:column;overflow:hidden;min-height:0;grid-row:2}
 .ph{display:flex;align-items:center;gap:5px;padding:5px 10px;
   border-bottom:1px solid var(--border-s);font-size:9.5px;font-weight:700;
   color:var(--t2);text-transform:uppercase;letter-spacing:.7px;
@@ -648,6 +869,43 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
 .teleop-st{font-size:9px;text-align:center;font-family:var(--mono);
   padding:2px 0;min-height:14px;color:var(--t3);transition:color .2s}
 
+/* 데이터 수집 패널 */
+.rec-sep{height:2px;background:linear-gradient(90deg,var(--red),var(--purple));border-radius:1px;margin:6px 10px 5px;opacity:.35}
+.rec-section{padding:0 10px 10px}
+.rec-status-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:10px;
+  font-size:9px;font-weight:700;letter-spacing:.5px;margin-bottom:6px;border:1px solid var(--border);
+  background:var(--green-bg);border-color:#86efac;color:var(--green-tx);transition:all .3s}
+.rec-status-badge.recording{background:var(--red-bg);border-color:#fca5a5;color:var(--red-tx)}
+.rec-status-badge.starting{background:var(--yellow-bg);border-color:#fde68a;color:var(--yellow-tx)}
+.rec-status-badge.stopping{background:var(--cyan-bg);border-color:#a5f3fc;color:var(--cyan-tx)}
+.rec-dot{width:5px;height:5px;border-radius:50%;background:currentColor}
+.rec-dot.blink{animation:blink .7s infinite}
+.rec-inp-row{display:flex;flex-direction:column;gap:3px;margin-bottom:5px}
+.rec-inp-lbl{font-size:8px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.4px}
+.rec-inp{width:100%;padding:3px 5px;border:1px solid var(--border);border-radius:4px;
+  font-family:var(--mono);font-size:10px;background:var(--bg);outline:none;color:var(--t1)}
+.rec-inp:focus{border-color:var(--red);background:var(--red-bg)}
+.rec-btns{display:grid;grid-template-columns:1fr 1fr;gap:3px;margin-bottom:4px}
+.rec-btn{padding:5px 0;border-radius:4px;border:1px solid var(--border);
+  background:var(--bg);font-size:9.5px;font-weight:700;cursor:pointer;
+  color:var(--t2);transition:all .15s;width:100%}
+.rec-btn.start{background:var(--green);color:#fff;border-color:var(--green)}
+.rec-btn.start:hover{background:var(--green-tx)}
+.rec-btn.stop{background:var(--red);color:#fff;border-color:var(--red)}
+.rec-btn.stop:hover{background:var(--red-tx)}
+.rec-btn.home{grid-column:1/3}
+.rec-btn.convert{grid-column:1/3;background:var(--purple-bg);border-color:#ddd6fe;color:var(--purple-tx)}
+.rec-btn.convert:hover{background:var(--purple);color:#fff}
+.rec-btn:disabled{opacity:.4;cursor:not-allowed}
+.grip-btns{display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;margin-bottom:4px}
+.grip-btn{padding:4px 0;border-radius:3px;border:1px solid var(--border);
+  background:var(--bg);font-size:8.5px;font-weight:700;cursor:pointer;color:var(--t2);transition:all .1s}
+.grip-btn:active{background:var(--cyan-bg);border-color:var(--cyan);color:var(--cyan-tx)}
+.rot-btns{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;margin-bottom:3px}
+.rot-btn{padding:3px 0;border-radius:3px;border:1px solid var(--border);
+  background:var(--bg);font-size:8px;font-weight:700;cursor:pointer;color:var(--t2);transition:all .1s}
+.rot-btn:active{background:var(--purple-bg);border-color:var(--purple);color:var(--purple-tx)}
+
 /* DAMAGE FLASH */
 #dmg-flash{position:fixed;inset:0;pointer-events:none;z-index:999;
   opacity:0;border:3px solid var(--red);background:rgba(220,38,38,.06)}
@@ -659,6 +917,27 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
 .ws-dot{width:4px;height:4px;border-radius:50%;background:var(--green)}
 .ws-badge.dis{color:var(--red);border-color:#fecaca}
 .ws-badge.dis .ws-dot{background:var(--red)}
+
+/* SENSOR GRAPH PANEL */
+.sensor-graph-container{grid-column:3;grid-row:2;
+  background:var(--card);border:1px solid var(--border);border-radius:var(--r);
+  box-shadow:var(--sh);display:flex;flex-direction:column;overflow:hidden;
+  min-height:0;margin-bottom:0}
+.sensor-graph-header{padding:8px 12px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:8px;background:var(--bg);flex-shrink:0}
+.sensor-graph-header .ph-dot{width:4px;height:4px;border-radius:50%;flex-shrink:0}
+.sensor-graph-header-title{font-size:9.5px;font-weight:700;color:var(--t2);
+  text-transform:uppercase;letter-spacing:.7px}
+.sensor-graph-header-status{margin-left:auto;font-size:8.5px;color:var(--t3)}
+.sensor-graph-content{flex:1;overflow:hidden;position:relative}
+#sensor-graph-plot{width:100%;height:100%;display:block}
+.sensor-graph-empty{position:absolute;inset:0;display:flex;align-items:center;
+  justify-content:center;color:var(--t3);font-size:11px;background:var(--bg)}
+
+/* 로봇상태, 관절, 카메라 패널 배치 */
+.bot > .panel:nth-child(2){grid-column:1;grid-row:2/4} /* 로봇상태 - 2행 전체 */
+.bot > .panel:nth-child(3){grid-column:2;grid-row:2/4} /* 관절/그리퍼 - 2행 전체 */
+.bot > .panel:nth-child(4){grid-column:3;grid-row:3} /* 카메라 - 3행만 */
 </style>
 </head>
 <body>
@@ -753,8 +1032,21 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
     </div>
   </div>
 
-  <!-- 하단 그리드 (4열) -->
+  <!-- 하단 그리드 (4열, 2행: 상단 제어판, 하단 그래프) -->
   <div class="bot">
+
+    <!-- 센서 그래프 (상단 전체 너비) -->
+    <div class="sensor-graph-container">
+      <div class="sensor-graph-header">
+        <div class="ph-dot" id="sensor-graph-dot" style="background:var(--purple)"></div>
+        <span class="sensor-graph-header-title">실시간 센서 모니터링</span>
+        <span class="sensor-graph-header-status" id="sensor-status">데이터 대기 중...</span>
+      </div>
+      <div class="sensor-graph-content">
+        <div id="sensor-graph-plot"></div>
+        <div class="sensor-graph-empty" id="sensor-graph-empty">데이터 수집 중. 녹화 시작 후 표시됩니다...</div>
+      </div>
+    </div>
 
     <!-- ① 로봇 상태 + 방향조작 -->
     <div class="panel">
@@ -771,14 +1063,6 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
             </div>
           </div>
           <div class="sp-state" id="sp-state">대기 중</div>
-          <div class="sp-num" id="sp-num">수확 대기</div>
-          <div class="sp-timer" id="sp-timer"></div>
-          <div class="sp-div"></div>
-          <div class="sp-mini">
-            <div class="sp-mrow"><span class="sp-mlbl">성공</span><span class="sp-mval" id="mini-ok" style="color:var(--green)">—</span></div>
-            <div class="sp-mrow"><span class="sp-mlbl">실패</span><span class="sp-mval" id="mini-fail" style="color:var(--red)">—</span></div>
-            <div class="sp-mrow"><span class="sp-mlbl">손상</span><span class="sp-mval" id="mini-dmg" style="color:var(--yellow)">—</span></div>
-          </div>
         </div>
         <!-- 방향조작 구분선 -->
         <div style="height:2px;background:linear-gradient(90deg,var(--green),var(--cyan));border-radius:1px;margin:2px 10px 5px;opacity:.35"></div>
@@ -808,6 +1092,111 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
             <span id="tp-spd-val">20%</span>
           </div>
           <div class="teleop-st" id="teleop-st">정지</div>
+          <!-- 추가 회전 버튼 -->
+          <div style="margin-top:6px">
+            <div style="font-size:9px;color:var(--t3);margin-bottom:2px;font-weight:700">회전 각도</div>
+            <input type="range" id="rot-speed" min="1" max="20" step="1" value="5"
+              style="width:100%;height:4px;cursor:pointer"
+              oninput="document.getElementById('rot-spd-val').textContent=this.value+'°'">
+            <span id="rot-spd-val" style="font-size:8px;color:var(--t3)">5°</span>
+          </div>
+          <div class="rot-btns" style="margin-top:4px">
+            <button class="rot-btn" onclick="teleopMove('rx_plus')">Rx+</button>
+            <button class="rot-btn" onclick="teleopMove('rx_minus')">Rx-</button>
+            <button class="rot-btn" onclick="teleopMove('ry_plus')">Ry+</button>
+            <button class="rot-btn" onclick="teleopMove('ry_minus')">Ry-</button>
+            <button class="rot-btn" onclick="teleopMove('rz_plus')">Rz+</button>
+            <button class="rot-btn" onclick="teleopMove('rz_minus')">Rz-</button>
+          </div>
+        </div>
+        <!-- 데이터 수집 구분선 -->
+        <div class="rec-sep"></div>
+        <div class="rec-section">
+          <div class="sec-lbl" style="color:var(--red-tx)">데이터 수집</div>
+          <!-- 녹화 상태 -->
+          <div class="rec-status-badge" id="rec-badge">
+            <div class="rec-dot" id="rec-dot"></div>
+            <span id="rec-badge-txt">대기</span>
+          </div>
+          <!-- 메타 입력 -->
+          <div class="rec-inp-row">
+            <span class="rec-inp-lbl">에피소드 (비우면 자동)</span>
+            <input class="rec-inp" id="rec-ep" type="text" placeholder="자동 부여">
+          </div>
+          <div class="rec-inp-row">
+            <span class="rec-inp-lbl">태스크</span>
+            <input class="rec-inp" id="rec-task" type="text"
+              value="Grasp the strawberry stem and pick it.">
+          </div>
+          <div class="rec-inp-row">
+            <span class="rec-inp-lbl">카테고리</span>
+            <input class="rec-inp" id="rec-cat" type="text" placeholder="no_occlusion">
+          </div>
+          <!-- 홈 포즈 -->
+          <div class="rec-inp-row">
+            <span class="rec-inp-lbl">홈 포즈</span>
+            <select class="rec-inp" id="rec-home">
+              <option value="top_left">top_left</option>
+              <option value="top_right">top_right</option>
+              <option value="bottom_left">bottom_left</option>
+              <option value="bottom_right">bottom_right</option>
+            </select>
+          </div>
+          <!-- 데이터 저장 경로 -->
+          <div class="rec-inp-row">
+            <span class="rec-inp-lbl">데이터 경로</span>
+            <input class="rec-inp" id="rec-rawdir" type="text"
+              placeholder="/vla_ws/data/raw/final_project/vla_dataset_v0.3.0"
+              value="/vla_ws/data/raw/final_project/vla_dataset_v0.3.0"
+              style="font-size:9px;padding:4px">
+          </div>
+          <!-- 제어 버튼 -->
+          <div class="rec-btns">
+            <button class="rec-btn start" id="btn-rec-start" onclick="startRecording()">▶ 녹화 시작</button>
+            <button class="rec-btn stop"  id="btn-rec-stop"  onclick="stopRecording()" disabled>■ 녹화 종료</button>
+            <button class="rec-btn home"  onclick="moveHome()">⌂ 홈 이동</button>
+            <button class="rec-btn convert" onclick="convertData()">⚙ 데이터 변환</button>
+            <!-- 변환 진행률 바 -->
+            <div id="convert-progress-container" style="display:none;margin-top:6px">
+              <div style="font-size:9px;color:var(--t3);margin-bottom:2px;font-weight:700">변환 중...</div>
+              <div style="width:100%;height:12px;background:var(--bg);border:1px solid var(--border);border-radius:2px;overflow:hidden">
+                <div id="convert-progress-bar" style="height:100%;background:var(--purple);width:0%;transition:width 0.3s;display:flex;align-items:center;justify-content:center">
+                  <span id="convert-progress-text" style="font-size:8px;color:#fff;font-weight:700"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <!-- 그리퍼 -->
+          <div class="sec-lbl" style="color:var(--cyan-tx);margin-top:4px">그리퍼 즉시 제어</div>
+          <div class="grip-btns">
+            <button class="grip-btn" onclick="teleopGripper(0)">열기</button>
+            <button class="grip-btn" onclick="teleopGripper(740)">파지</button>
+            <button class="grip-btn" onclick="teleopGripper(600)">홈(600)</button>
+          </div>
+          <!-- VLA 추론 구분선 -->
+          <div style="height:2px;background:linear-gradient(90deg,var(--purple),var(--blue));border-radius:1px;margin:6px 0 5px;opacity:.35"></div>
+          <div class="sec-lbl" style="color:var(--purple-tx)">VLA 추론 제어</div>
+          <!-- VLA 상태 배지 -->
+          <div class="rec-status-badge" id="vla-badge">
+            <div class="rec-dot" id="vla-dot"></div>
+            <span id="vla-badge-txt">대기</span>
+          </div>
+          <!-- 지시 텍스트 입력 -->
+          <div class="rec-inp-row">
+            <span class="rec-inp-lbl">태스크 지시</span>
+            <input class="rec-inp" id="vla-instruction" value="Grasp the strawberry stem and pick it.">
+          </div>
+          <!-- 에피소드 리셋 체크박스 -->
+          <label style="font-size:9px;color:var(--t3);margin-bottom:5px;display:flex;align-items:center;gap:3px">
+            <input type="checkbox" id="vla-reset"> 에피소드 리셋
+          </label>
+          <!-- 버튼: 단일 추론 / 연속 추론 -->
+          <div class="rec-btns">
+            <button class="rec-btn" id="btn-vla-once" onclick="runVlaOnce()" style="background:var(--purple);color:#fff;border-color:var(--purple)">▶ 단일 추론</button>
+            <button class="rec-btn" id="btn-vla-loop" onclick="toggleVlaLoop()" style="background:var(--purple-bg);border-color:#ddd6fe;color:var(--purple-tx)">⟳ 연속 추론</button>
+          </div>
+          <!-- 결과 표시 -->
+          <div id="vla-result" style="font-size:8.5px;font-family:var(--mono);color:var(--t3);margin-top:4px;line-height:1.4">—</div>
         </div>
       </div>
     </div>
@@ -844,7 +1233,7 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
           <div class="jvel"><label>속도(%)</label><input type="number" id="jvel" value="10" min="1" max="100"></div>
           <div class="jbtns">
             <button class="jbtn s" onclick="loadCurAngles()">현재값</button>
-            <button class="jbtn p" onclick="sendJointCmd()">이동</button>
+            <button class="jbtn p" onclick="sendJointCmd().catch(()=>{})">이동</button>
           </div>
         </div>
         <div class="jstatus" id="jstatus"></div>
@@ -874,7 +1263,7 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
           <div class="jvel"><label>속도(%)</label><input type="number" id="tvel" value="10" min="1" max="100"></div>
           <div class="jbtns">
             <button class="jbtn s" onclick="loadCurTcp()">현재값</button>
-            <button class="jbtn p" onclick="sendTcpCmd()">이동</button>
+            <button class="jbtn p" onclick="sendTcpCmd().catch(()=>{})">이동</button>
           </div>
         </div>
         <!-- 그리퍼 구분선 -->
@@ -979,24 +1368,6 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
       </div>
     </div>
 
-    <!-- ④ 메시지 -->
-    <div class="panel">
-      <div class="ph">
-        <div class="ph-dot" style="background:var(--green);animation:blink 1.5s infinite"></div>
-        실시간 메시지
-        <span class="ph-badge" id="msg-cnt">0</span>
-      </div>
-      <div class="msg-list" id="msg-list">
-        <div class="mi-info"><div class="msg-wrap"><div class="msg-item">
-          <span class="msg-ts">—</span>
-          <div class="msg-body">
-            <div class="msg-chip">INFO</div>
-            <div class="msg-txt">시스템 연결 대기 중...</div>
-          </div>
-        </div></div></div>
-      </div>
-    </div>
-
   </div><!-- bot -->
 </div><!-- main -->
 
@@ -1004,10 +1375,101 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
   <div class="ws-dot"></div><span id="ws-txt">연결 중...</span>
 </div>
 
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <script>
+/* 센서 그래프 데이터 */
+let sensorGraphData = {
+  timestamps: [],
+  j1: [], j2: [], j3: [], j4: [], j5: [], j6: [],
+  x: [], y: [], z: [],
+  gripper: []
+};
+const MAX_GRAPH_POINTS = 100;
+
+async function updateSensorGraph() {
+  try {
+    const r = await fetch('/api/sensor-data');
+    if (!r.ok) return;
+    const data = await r.json();
+
+    if (!data.ok) return;
+
+    // 데이터 추가 (최대 MAX_GRAPH_POINTS 유지)
+    const len = sensorGraphData.timestamps.length;
+    sensorGraphData.timestamps.push(data.timestamp || len);
+    sensorGraphData.j1.push(data.joint_angles[0] || 0);
+    sensorGraphData.j2.push(data.joint_angles[1] || 0);
+    sensorGraphData.j3.push(data.joint_angles[2] || 0);
+    sensorGraphData.j4.push(data.joint_angles[3] || 0);
+    sensorGraphData.j5.push(data.joint_angles[4] || 0);
+    sensorGraphData.j6.push(data.joint_angles[5] || 0);
+
+    const tcpNorm = [
+      Math.max(0, Math.min(100, (data.tcp_position[0] + 500) / 10)),
+      Math.max(0, Math.min(100, (data.tcp_position[1] + 500) / 10)),
+      Math.max(0, Math.min(100, (data.tcp_position[2] + 500) / 10))
+    ];
+    sensorGraphData.x.push(tcpNorm[0]);
+    sensorGraphData.y.push(tcpNorm[1]);
+    sensorGraphData.z.push(tcpNorm[2]);
+    sensorGraphData.gripper.push(data.gripper_position || 0);
+
+    // 최대값 초과 시 제거
+    while (sensorGraphData.timestamps.length > MAX_GRAPH_POINTS) {
+      sensorGraphData.timestamps.shift();
+      sensorGraphData.j1.shift(); sensorGraphData.j2.shift(); sensorGraphData.j3.shift();
+      sensorGraphData.j4.shift(); sensorGraphData.j5.shift(); sensorGraphData.j6.shift();
+      sensorGraphData.x.shift(); sensorGraphData.y.shift(); sensorGraphData.z.shift();
+      sensorGraphData.gripper.shift();
+    }
+
+    // 그래프 렌더링
+    if (sensorGraphData.timestamps.length > 0) {
+      const x = Array.from({length: sensorGraphData.timestamps.length}, (_, i) => i);
+
+      // 0-100% 정규화 적용
+      const normalizeJoint = (angles) => angles.map(a => Math.max(0, Math.min(100, (a + 360) / 7.2)));
+
+      const traces = [
+        {x, y: normalizeJoint(sensorGraphData.j1), name: 'J1', mode: 'lines', line: {color: '#2563eb', width: 1.5}},
+        {x, y: normalizeJoint(sensorGraphData.j2), name: 'J2', mode: 'lines', line: {color: '#7c3aed', width: 1.5}},
+        {x, y: normalizeJoint(sensorGraphData.j3), name: 'J3', mode: 'lines', line: {color: '#0891b2', width: 1.5}},
+        {x, y: normalizeJoint(sensorGraphData.j4), name: 'J4', mode: 'lines', line: {color: '#d97706', width: 1.5}},
+        {x, y: normalizeJoint(sensorGraphData.j5), name: 'J5', mode: 'lines', line: {color: '#059669', width: 1.5}},
+        {x, y: normalizeJoint(sensorGraphData.j6), name: 'J6', mode: 'lines', line: {color: '#dc2626', width: 1.5}},
+        {x, y: sensorGraphData.gripper, name: 'Gripper', mode: 'lines', line: {color: '#999999', width: 1.5, dash: 'dot'}}
+      ];
+
+      const layout = {
+        margin: {l: 40, r: 20, t: 20, b: 20},
+        xaxis: {title: '', showgrid: true, gridwidth: 0.5, gridcolor: '#e2e8f0'},
+        yaxis: {title: '%', range: [0, 100], showgrid: true, gridwidth: 0.5, gridcolor: '#e2e8f0'},
+        plot_bgcolor: '#fff',
+        paper_bgcolor: '#fff',
+        font: {family: "'JetBrains Mono', monospace", size: 10, color: '#475569'},
+        legend: {x: 0, y: 1, xanchor: 'left', yanchor: 'top', font: {size: 9},
+          bgcolor: 'rgba(255,255,255,0.9)', bordercolor: '#e2e8f0', borderwidth: 1},
+        hovermode: 'x unified',
+        showlegend: true
+      };
+
+      Plotly.react('sensor-graph-plot', traces, layout, {responsive: true, displayModeBar: false});
+
+      document.getElementById('sensor-graph-empty').style.display = 'none';
+      document.getElementById('sensor-status').textContent = data.recording ? '● 녹화 중' : '데이터 수집 중';
+      document.getElementById('sensor-status').style.color = data.recording ? 'var(--red)' : 'var(--t3)';
+    }
+  } catch (e) {
+    console.log('센서 데이터 로드 실패:', e);
+  }
+}
+
+// 2초마다 업데이트
+setInterval(updateSensorGraph, 2000);
+
 /* 상수 */
 const STATUS = {
-  idle:       {label:'대기 중', icon:'○', color:'var(--t3)',     ring:false},
+  idle:       {label:'대기 중', icon:'●', color:'var(--green)',  ring:false},  // 로봇 연결됨
   approaching:{label:'접근 중', icon:'→', color:'var(--cyan)',   ring:true},
   grasping:   {label:'파지 중', icon:'●', color:'var(--yellow)', ring:true},
   returning:  {label:'복귀 중', icon:'←', color:'var(--green)',  ring:true},
@@ -1172,13 +1634,15 @@ async function sendJointCmd(){
   const badge=document.getElementById('j-badge');
   const stat=document.getElementById('jstatus');
   try{
-    const r=await fetch('/api/joint-command',{method:'POST',
-      headers:{'Content-Type':'application/json'},body:JSON.stringify({angles,velocity:vel})});
+    const r=await fetch(TELEOP_API+'/move',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'joint',angles,velocity:vel})});
     if(r.ok){
       badge.textContent='전송됨';
       badge.style.cssText='background:var(--green-bg);border-color:#bbf7d0;color:var(--green-tx)';
       stat.style.color='var(--green-tx)';stat.textContent='명령 전송됨';
       setTimeout(()=>{badge.textContent='대기';badge.style.cssText='';stat.textContent='';},3500);
+    }else{
+      stat.style.color='var(--red-tx)';stat.textContent='로봇 제어 오류';
     }
   }catch(e){stat.style.color='var(--red-tx)';stat.textContent='전송 실패';}
 }
@@ -1194,8 +1658,8 @@ async function sendTcpCmd(){
   const vel=parseFloat(document.getElementById('tvel').value)||10;
   const badge=document.getElementById('tg-badge');
   try{
-    const r=await fetch('/api/tcp-command',{method:'POST',
-      headers:{'Content-Type':'application/json'},body:JSON.stringify({pose,velocity:vel})});
+    const r=await fetch(TELEOP_API+'/move',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'tcp',pose,velocity:vel})});
     if(r.ok){
       badge.textContent='TCP 전송';
       badge.style.cssText='background:var(--purple-bg);border-color:#ddd6fe;color:var(--purple-tx)';
@@ -1224,7 +1688,7 @@ async function sendGripCmd(pos){
   if(position<=5)state='closed';else if(position<95)state='grasping';
   const badge=document.getElementById('tg-badge');
   try{
-    const r=await fetch('/api/gripper-command',{method:'POST',
+    const r=await fetch(TELEOP_API+'/gripper',{method:'POST',
       headers:{'Content-Type':'application/json'},body:JSON.stringify({position,force,state})});
     if(r.ok){
       badge.textContent='그리퍼 전송';
@@ -1241,8 +1705,11 @@ function renderJoints(s){
   (s.joint_angles||[0,0,0,0,0,0]).forEach((a,i)=>{
     const[mn,mx]=J_LIM[i];
     const ve=document.getElementById('jv'+(i+1));
+    const ie=document.getElementById('ji'+(i+1));  // 관절 입력 필드도 함께 업데이트
     const fe=document.getElementById('jf'+(i+1));
     if(ve)ve.textContent=a.toFixed(1)+'°';
+    // 입력 필드가 포커스 중이 아닐 때만 현재 각도로 업데이트 (사용자 입력 보호)
+    if(ie && ie !== document.activeElement)ie.value=a.toFixed(1);
     if(fe){
       if(a>=0){const w=Math.min(a/mx*50,50);fe.style.left='50%';fe.style.width=w+'%';fe.style.background='var(--blue)';}
       else{const w=Math.min(Math.abs(a)/Math.abs(mn)*50,50);fe.style.left=(50-w)+'%';fe.style.width=w+'%';fe.style.background='var(--purple)';}
@@ -1269,7 +1736,11 @@ function renderGripper(s){
   const ge=document.getElementById('gjgap');if(ge)ge.style.width=((pos/100)*28).toFixed(1)+'px';
   ['gjl','gjr'].forEach(id=>{const e=document.getElementById(id);if(e)e.style.background=st.color;});
   const se=document.getElementById('g-state');if(se){se.textContent=st.label;se.style.color=st.color;}
-  const pe=document.getElementById('g-pct');if(pe)pe.textContent=pos.toFixed(0)+'% | '+(g.force??30).toFixed(0)+' N';
+  const pe=document.getElementById('g-pct');
+  if(pe){
+    const raw=(g.raw_pos!=null)?'  |  '+g.raw_pos+'/740':'';
+    pe.textContent=pos.toFixed(0)+'%'+raw+'  |  '+(g.force??30).toFixed(0)+' N';
+  }
   const sl=document.getElementById('g-slider');if(sl&&document.activeElement!==sl)sl.value=pos;
   const ip=document.getElementById('g-inp');if(ip&&document.activeElement!==ip)ip.value=pos.toFixed(0);
   const gb=document.getElementById('gr-badge');if(gb)gb.textContent=st.label;
@@ -1462,7 +1933,14 @@ function render(s){
   harvestStart=s.current_harvest_start?new Date(s.current_harvest_start):null;
 
   /* 로봇 상태 */
-  const si=STATUS[s.status||'idle']||STATUS.idle;
+  let si = STATUS.idle;  // 기본값
+  if(!s.robot_ready) {
+    // 로봇 미연결: 회색으로 표시
+    si = {label:'연결 대기', icon:'○', color:'var(--t3)', ring:false};
+  } else {
+    // 로봇 연결됨: status에 따라 표시
+    si = STATUS[s.status||'idle'] || STATUS.idle;
+  }
   document.getElementById('sp-icon').textContent=si.icon;
   document.getElementById('sp-icon').style.color=si.color;
   document.getElementById('sp-icon-bg').style.borderColor=si.color;
@@ -1518,6 +1996,150 @@ function connectWS(){
   ws.onerror=()=>ws.close();
 }
 connectWS();
+
+/* ── 텔레오퍼레이션 API (포트 8767) ────────────────────────────────────────── */
+// 대시보드와 teleop-api 모두 host 네트워크를 사용하므로 localhost로 접근 가능
+const TELEOP_API = `http://${window.location.hostname}:8767`;
+
+async function teleopMove(cmd) {
+  // 회전 명령어이면 rot-speed 값을 속도로 전달
+  let body = {command:cmd};
+  if(['rx_plus','rx_minus','ry_plus','ry_minus','rz_plus','rz_minus'].includes(cmd)) {
+    const rotSpeed = parseFloat(document.getElementById('rot-speed')?.value || 5);
+    body.angle_scale = rotSpeed / 5;  // 기본값(5°)대비 배율
+  }
+  await fetch(TELEOP_API+'/move', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)
+  }).catch(()=>{});
+}
+
+async function teleopGripper(pos) {
+  await fetch(TELEOP_API+'/gripper', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({position:pos})
+  }).catch(()=>{});
+}
+
+async function moveHome() {
+  const home = document.getElementById('rec-home')?.value || '';
+  await fetch(TELEOP_API+'/home', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({home_pose:home})
+  }).catch(()=>{});
+}
+
+async function startRecording() {
+  const btn = document.getElementById('btn-rec-start');
+  btn.disabled = true;  // 중복 방지
+
+  const ep   = document.getElementById('rec-ep')?.value.trim() || '';
+  const task = document.getElementById('rec-task')?.value.trim() || '';
+  const cat  = document.getElementById('rec-cat')?.value.trim() || '';
+  const raw  = document.getElementById('rec-rawdir')?.value.trim() || '';
+  const r    = await fetch(TELEOP_API+'/record/start', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({episode:ep||undefined, task, category:cat, raw_dir:raw||undefined})
+  }).catch(()=>null);
+  if(r&&r.ok){
+    const d=await r.json();
+    if(d.ok && d.episode) document.getElementById('rec-ep').value = d.episode;
+  } else {
+    btn.disabled = false;  // 실패 시 다시 활성화
+  }
+}
+
+async function stopRecording() {
+  const btn = document.getElementById('btn-rec-stop');
+  btn.disabled = true;  // 중복 방지
+
+  await fetch(TELEOP_API+'/record/stop', {method:'POST'}).catch(()=>{
+    btn.disabled = false;  // 실패 시 다시 활성화
+  });
+}
+
+async function convertData() {
+  const r = await fetch(TELEOP_API+'/convert', {method:'POST'}).catch(()=>null);
+  if(!r||!r.ok) {alert('변환 실패'); return;}
+
+  // 진행률 바 표시
+  document.getElementById('convert-progress-container').style.display = 'block';
+  let lastProgress = 0;
+
+  // 진행률 폴링 (1초마다)
+  const interval = setInterval(async ()=>{
+    const statusR = await fetch(TELEOP_API+'/status').catch(()=>null);
+    if(!statusR||!statusR.ok) return;
+    const d = await statusR.json();
+
+    const bar = document.getElementById('convert-progress-bar');
+    const text = document.getElementById('convert-progress-text');
+    const pct = Math.max(lastProgress, d.convert_progress || 0);
+    lastProgress = pct;
+
+    bar.style.width = pct + '%';
+    text.textContent = pct + '%';
+
+    console.log(`변환: ${pct}% (converting=${d.converting})`);
+
+    // 완료
+    if(!d.converting && pct >= 100) {
+      clearInterval(interval);
+      alert('✅ 데이터 변환 완료!');
+      setTimeout(()=>{
+        document.getElementById('convert-progress-container').style.display = 'none';
+        bar.style.width = '0%';
+        text.textContent = '';
+        lastProgress = 0;
+      }, 2000);
+    }
+  }, 1000);
+}
+
+/* 녹화 상태 폴링 (1 초 간격) */
+function updateRecBadge(phase, robotReady, robotError) {
+  const badge  = document.getElementById('rec-badge');
+  const dot    = document.getElementById('rec-dot');
+  const txt    = document.getElementById('rec-badge-txt');
+  const btnS   = document.getElementById('btn-rec-start');
+  const btnE   = document.getElementById('btn-rec-stop');
+  if(!badge) return;
+
+  if(!robotReady) {
+    badge.className = 'rec-status-badge';
+    dot.className   = 'rec-dot';
+    txt.textContent = robotError ? `로봇 미연결: ${robotError}` : '로봇 API 대기 중...';
+    if(btnS) btnS.disabled = true;
+    if(btnE) btnE.disabled = true;
+    return;
+  }
+
+  badge.className = 'rec-status-badge ' + (phase==='recording'?'recording':phase==='starting'?'starting':phase==='stopping'?'stopping':'');
+  dot.className   = 'rec-dot' + (phase==='recording'||phase==='starting'?' blink':'');
+  const labels = {idle:'대기', starting:'시작 중...', recording:'● 녹화 중', stopping:'종료 중...'};
+  txt.textContent = labels[phase] || phase;
+  if(btnS) btnS.disabled = (phase !== 'idle');
+  if(btnE) btnE.disabled = (phase === 'idle' || phase === 'stopping');
+}
+
+setInterval(async()=>{
+  const r = await fetch(TELEOP_API+'/status').catch(()=>null);
+  if(!r||!r.ok){updateRecBadge('idle', false, 'API 서버 미응답');return;}
+  const d = await r.json();
+  updateRecBadge(d.phase||'idle', d.robot_ready, d.robot_error);
+}, 1000);
+
+/* 기존 sendTeleop: D-pad 버튼 → 로봇 실제 이동도 호출 */
+const _origSendTeleop = sendTeleop;
+sendTeleop = async function(cmd) {
+  const sp = parseFloat(document.getElementById('tp-speed')?.value||0.2);
+  const ts = document.getElementById('teleop-st');
+  if(ts){ts.textContent=TELEOP_LBL[cmd]||cmd;
+    ts.style.color=cmd==='stop'?'var(--t3)':'var(--blue)';}
+  await fetch('/api/teleop', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({command:cmd, speed:sp})}).catch(()=>{});
+  if(cmd!=='stop') await teleopMove(cmd);
+};
 
 /* 듀얼 카메라 */
 const CAM_SRCS=['/camera/0','/camera/1'];
@@ -1576,16 +2198,41 @@ function camRetry(i){
   const img=document.getElementById('cam-img-'+i);
   if(img)img.src=CAM_SRCS[i]+'?'+Date.now();
 }
+/* MJPEG 스트림 대신 단일 JPEG 폴링 (브라우저 호환성 확실) */
+const CAM_SNAP=['/api/snapshot/0','/api/snapshot/1'];
 function initCam(i){
   const img=document.getElementById('cam-img-'+i);
   const spin=document.getElementById('cam-spin-'+i);
   const ptx=document.getElementById('cam-ph-txt-'+i);
   if(!img)return;
   img.onload=()=>camSetLive(i);
-  img.onerror=()=>camSetError(i);
+  img.onerror=()=>{}; // 폴링 중 일시적 204는 무시
   if(spin)spin.style.display='block';
   if(ptx)ptx.textContent='카메라 연결 중...';
-  img.src=CAM_SRCS[i]+'?'+Date.now();
+
+  let failCount=0;
+  async function poll(){
+    try{
+      const r=await fetch(CAM_SNAP[i]+'?t='+Date.now());
+      if(r.ok && r.status===200){
+        const blob=await r.blob();
+        if(blob.size>0){
+          if(img._url)URL.revokeObjectURL(img._url);
+          img._url=URL.createObjectURL(blob);
+          img.src=img._url;
+          failCount=0;
+        }
+      }else{
+        failCount++;
+        if(failCount>10)camSetError(i);
+      }
+    }catch(e){
+      failCount++;
+      if(failCount>10)camSetError(i);
+    }
+    setTimeout(poll, 100);  // ~10fps
+  }
+  poll();
 }
 [0,1].forEach(initCam);
 
@@ -1607,6 +2254,73 @@ function toggleCamFS(i){
   if(!document.fullscreenElement)b&&b.requestFullscreen&&b.requestFullscreen();
   else document.exitFullscreen&&document.exitFullscreen();
 }
+
+/* ── VLA 추론 제어 ────────────────────────────────────────────────────────── */
+let _vlaLoopTimer = null;
+const VLA_LOOP_INTERVAL_MS = 1000;
+
+async function runVlaOnce(){
+  const btn = document.getElementById('btn-vla-once');
+  const badge = document.getElementById('vla-badge');
+  const txt = document.getElementById('vla-badge-txt');
+  const result = document.getElementById('vla-result');
+
+  btn.disabled = true;
+  badge.className = 'rec-status-badge starting';
+  txt.textContent = '추론 중...';
+  result.textContent = '요청 중...';
+
+  try{
+    const r = await fetch('/api/vla/predict', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        instruction: document.getElementById('vla-instruction').value,
+        reset_episode: document.getElementById('vla-reset').checked
+      })
+    });
+    const d = await r.json();
+    if(d.ok){
+      badge.className = 'rec-status-badge';
+      txt.textContent = '완료';
+      const pos = d.action.slice(0, 3).map(x => (x * 1000).toFixed(1));  // m → mm
+      const rot = d.action.slice(3, 6).map(x => (x * 57.2958).toFixed(1));  // rad → °
+      const grip = (d.action[6] * 100).toFixed(0);
+      result.textContent =
+        `Δpos: [${pos[0]}, ${pos[1]}, ${pos[2]}]mm  ` +
+        `Δrot: [${rot[0]}, ${rot[1]}, ${rot[2]}]°  ` +
+        `grip: ${grip}%`;
+      document.getElementById('vla-reset').checked = false;
+    }else{
+      badge.className = 'rec-status-badge recording';
+      txt.textContent = '오류';
+      result.textContent = d.error || '추론 실패';
+    }
+  }catch(e){
+    badge.className = 'rec-status-badge recording';
+    txt.textContent = '연결 실패';
+    result.textContent = String(e);
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+function toggleVlaLoop(){
+  const btn = document.getElementById('btn-vla-loop');
+  if(_vlaLoopTimer){
+    clearInterval(_vlaLoopTimer);
+    _vlaLoopTimer = null;
+    btn.textContent = '⟳ 연속 추론';
+    btn.style.cssText = 'background:var(--purple-bg);border-color:#ddd6fe;color:var(--purple-tx)';
+    document.getElementById('vla-badge').className = 'rec-status-badge';
+    document.getElementById('vla-badge-txt').textContent = '대기';
+  }else{
+    btn.textContent = '⏹ 중지';
+    btn.style.cssText = 'background:var(--red);color:#fff;border-color:var(--red)';
+    runVlaOnce();
+    _vlaLoopTimer = setInterval(runVlaOnce, VLA_LOOP_INTERVAL_MS);
+  }
+}
 </script>
 </body>
 </html>
@@ -1624,8 +2338,18 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
 
     app = FastAPI()
 
+    # 센서 데이터 캐시
+    _sensor_cache = {'joint_angles': [0]*6, 'tcp_position': [0, 0, 0], 'gripper_position': 0,
+                     'timestamp': 0, 'recording': False}
+
     @app.get("/")
-    async def index(): return HTMLResponse(HTML)
+    async def index():
+        # 브라우저가 옛 HTML/JS를 캐싱하지 못하도록 강제
+        return HTMLResponse(HTML, headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        })
 
     @app.get("/camera-info")
     async def cam_info():
@@ -1645,18 +2369,47 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
     @app.post("/api/joint-command")
     async def joint_cmd(request: Request):
         b = await request.json()
+        angles = b.get("angles", [0]*6)
+
+        # Joint limit 검증
+        is_valid, error_msg = _validate_joint_angles(angles)
+        if not is_valid:
+            _push_msg(_load(), error_msg, "error")
+            return JSONResponse({"ok": False, "error": error_msg}, status_code=400)
+
         s = _load()
-        s["pending_joint_command"] = {"angles": b.get("angles",[0]*6),
+        s["pending_joint_command"] = {"angles": angles,
           "velocity": float(b.get("velocity",10)), "sent_at": datetime.now().isoformat()}
-        _save(s); return JSONResponse({"ok": True})
+        _save(s)
+        _push_msg(s, f"✅ Joint command 수락: {[f'{a:.1f}' for a in angles[:6]]}", "info")
+        return JSONResponse({"ok": True})
 
     @app.post("/api/tcp-command")
     async def tcp_cmd(request: Request):
         b = await request.json()
+        pose = b.get("pose", [0]*6)
+
+        # IK로 검증
         s = _load()
-        s["pending_tcp_command"] = {"pose": b.get("pose",[0]*6),
+        current_joints = s.get("joint_angles", [0]*6)
+
+        joint_angles = _tcp_to_joint_angles(pose, current_joints)
+        if joint_angles is None:
+            error_msg = "❌ IK 계산 실패 — TCP 좌표를 관절각도로 변환할 수 없음"
+            _push_msg(s, error_msg, "error")
+            return JSONResponse({"ok": False, "error": error_msg}, status_code=400)
+
+        # 계산된 관절각도 검증
+        is_valid, error_msg = _validate_joint_angles(joint_angles)
+        if not is_valid:
+            _push_msg(s, error_msg, "error")
+            return JSONResponse({"ok": False, "error": error_msg}, status_code=400)
+
+        s["pending_tcp_command"] = {"pose": pose,
           "velocity": float(b.get("velocity",10)), "sent_at": datetime.now().isoformat()}
-        _save(s); return JSONResponse({"ok": True})
+        _save(s)
+        _push_msg(s, f"✅ TCP command 수락: [{', '.join([f'{p:.1f}' for p in pose])}]", "info")
+        return JSONResponse({"ok": True})
 
     @app.post("/api/gripper-command")
     async def grip_cmd(request: Request):
@@ -1739,6 +2492,229 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
                             headers={"Cache-Control":"no-store"})
         return Response(status_code=204)
 
+    @app.post("/api/vla/predict")
+    async def vla_predict(request: Request):
+        """VLA 추론 엔드포인트: 현재 카메라 이미지와 상태를 VLA API로 전송하고 로봇 동작 실행"""
+        from io import BytesIO
+        try: from PIL import Image
+        except ImportError: return JSONResponse({"ok": False, "error": "PIL not installed"}, status_code=400)
+
+        req_body = await request.json()
+        instruction = req_body.get("instruction", "Grasp the strawberry stem and pick it.")
+        reset_episode = req_body.get("reset_episode", False)
+
+        # 카메라 이미지 취득
+        with _cam_locks[0]: cam0 = _cam_jpegs[0]
+        with _cam_locks[1]: cam1 = _cam_jpegs[1]
+        if not cam0 or not cam1:
+            return JSONResponse({"ok": False, "error": "카메라 이미지 없음"}, status_code=503)
+
+        # 이미지 리사이즈 (224x224)
+        def resize_to_224(jpeg_bytes):
+            img = Image.open(BytesIO(jpeg_bytes)).convert('RGB')
+            img = img.resize((224, 224))
+            buf = BytesIO()
+            img.save(buf, format='JPEG', quality=85)
+            return base64.b64encode(buf.getvalue()).decode('utf-8')
+
+        cam0_b64 = resize_to_224(cam0)
+        cam1_b64 = resize_to_224(cam1)
+
+        # 상태 파일에서 현재 TCP pose, gripper 읽기
+        s = _load()
+        tcp_pose = s.get("tcp_pose", [0]*6)  # mm/deg
+        gripper_pos = s.get("gripper", {}).get("position", 100)  # 0-100
+
+        # 32-dim state 벡터 구성: [tcp_x_m, tcp_y_m, tcp_z_m, rx_rad, ry_rad, rz_rad, gripper_ratio, 0×25]
+        state_vec = [
+            tcp_pose[0] / 1000.0,  # X mm → m
+            tcp_pose[1] / 1000.0,  # Y mm → m
+            tcp_pose[2] / 1000.0,  # Z mm → m
+            tcp_pose[3] / 57.2958,  # Rx deg → rad
+            tcp_pose[4] / 57.2958,  # Ry deg → rad
+            tcp_pose[5] / 57.2958,  # Rz deg → rad
+            gripper_pos / 100.0,    # position % → ratio [0, 1]
+        ] + [0.0] * 25  # 패딩
+
+        # VLA API 요청
+        # 학습 rename_map: camera2 → left_wrist_0_rgb 이므로 cam1(=camera2)은 left_wrist_image 슬롯으로 전송.
+        # (물리적으로 오른쪽/팔 장착이어도 모델 슬롯 이름 기준을 따라야 학습-추론 일관)
+        vla_req = {
+            "state": state_vec,
+            "base_image": cam0_b64,
+            "left_wrist_image": cam1_b64,
+            "right_wrist_image": None,
+            "instruction": instruction,
+            "reset_episode": reset_episode
+        }
+
+        vla_resp = None
+        try:
+            req_json = json.dumps(vla_req).encode('utf-8')
+            req_obj = urllib.request.Request(f'{VLA_API_URL}/predict',
+                data=req_json, headers={'Content-Type': 'application/json'})
+            with urllib.request.urlopen(req_obj, timeout=5) as resp:
+                vla_resp = json.loads(resp.read())
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": f"VLA API 오류: {str(e)}"}, status_code=502)
+
+        if "action" not in vla_resp:
+            return JSONResponse({"ok": False, "error": "VLA 응답에 action 없음"}, status_code=502)
+
+        action = vla_resp.get("action", [0]*32)
+
+        # Action 처리: [0:3] delta_m, [3:6] delta_rad, [6] gripper_ratio, [7:] ignored
+        delta_m = action[:3]
+        delta_rad = action[3:6]
+        gripper_ratio = action[6] if len(action) > 6 else 0.0
+
+        # 단위 변환 및 안전 클램프
+        delta_mm = [d * 1000 for d in delta_m]  # m → mm
+        delta_mm = [max(-200, min(200, d)) for d in delta_mm]  # ±200mm 클램프
+
+        delta_deg = [d * 57.2958 for d in delta_rad]  # rad → deg
+        delta_deg = [max(-30, min(30, d)) for d in delta_deg]  # ±30deg 클램프
+
+        gripper_raw = max(0, min(740, int(gripper_ratio * 740)))
+
+        # 목표 TCP pose 계산
+        target_pose = [
+            tcp_pose[0] + delta_mm[0],
+            tcp_pose[1] + delta_mm[1],
+            tcp_pose[2] + delta_mm[2],
+            tcp_pose[3] + delta_deg[0],
+            tcp_pose[4] + delta_deg[1],
+            tcp_pose[5] + delta_deg[2],
+        ]
+
+        # 목표 pose가 도달 가능한지 IK로 검증 (Joint limit 체크)
+        current_joints = s.get("joint_angles", [0]*6)
+        target_joints = _tcp_to_joint_angles(target_pose, current_joints)
+        if target_joints is None:
+            error_msg = "❌ VLA 목표 pose 도달 불가: IK 계산 실패"
+            _push_msg(s, error_msg, "error")
+            return JSONResponse({
+                "ok": False,
+                "error": error_msg,
+                "action": [float(action[i]) if isinstance(action, (list, np.ndarray)) and i < len(action) else 0.0 for i in range(7)],
+                "target_pose": target_pose,
+                "gripper": gripper_raw,
+                "robot_ok": False
+            })
+
+        is_valid, error_msg = _validate_joint_angles(target_joints)
+        if not is_valid:
+            error_msg = f"❌ VLA 목표 pose 도달 불가: {error_msg}"
+            _push_msg(s, error_msg, "error")
+            return JSONResponse({
+                "ok": False,
+                "error": error_msg,
+                "action": [float(action[i]) if isinstance(action, (list, np.ndarray)) and i < len(action) else 0.0 for i in range(7)],
+                "target_pose": target_pose,
+                "gripper": gripper_raw,
+                "robot_ok": False
+            })
+
+        # Teleop API로 로봇 동작 실행 (delta 명령으로 전송)
+        robot_ok = False
+        try:
+            # Delta 이동: 각 축별로 순차적으로 이동 (상대 이동)
+            axes = [
+                ('dx', delta_mm[0]),
+                ('dy', delta_mm[1]),
+                ('dz', delta_mm[2]),
+                ('drx', delta_deg[0]),
+                ('dry', delta_deg[1]),
+                ('drz', delta_deg[2]),
+            ]
+
+            move_ok = True
+            for axis_name, axis_val in axes:
+                if abs(axis_val) < 0.1:  # 거의 움직이지 않으면 스킵
+                    continue
+                teleop_move_req = {axis_name: axis_val}
+                teleop_url = f'http://localhost:8767/move'
+                teleop_req = urllib.request.Request(teleop_url,
+                    data=json.dumps(teleop_move_req).encode('utf-8'),
+                    headers={'Content-Type': 'application/json'}, method='POST')
+                try:
+                    with urllib.request.urlopen(teleop_req, timeout=5) as resp:
+                        move_resp = json.loads(resp.read())
+                        if not move_resp.get("ok"):
+                            move_ok = False
+                            break
+                except:
+                    move_ok = False
+                    break
+
+            if move_ok:
+                # 그리퍼 제어
+                gripper_req = {
+                    "position": gripper_raw
+                }
+                gripper_url = f'http://localhost:8767/gripper'
+                gripper_req_obj = urllib.request.Request(gripper_url,
+                    data=json.dumps(gripper_req).encode('utf-8'),
+                    headers={'Content-Type': 'application/json'}, method='POST')
+                with urllib.request.urlopen(gripper_req_obj, timeout=5) as gresp:
+                    gripper_resp = json.loads(gresp.read())
+                    robot_ok = gripper_resp.get("ok", False)
+        except Exception as e:
+            print(f'[VLA] Teleop API 호출 실패: {e}')
+
+        # 로그 저장
+        VLA_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        now = datetime.now()
+        log_file = VLA_LOG_DIR / f"vla_{now.strftime('%Y%m%d_%H%M%S_%f')}.json"
+        log_data = {
+            "timestamp": now.isoformat(),
+            "instruction": instruction,
+            "reset_episode": reset_episode,
+            "state_input": state_vec,
+            "action_raw": list(action[:7]) if isinstance(action, (list, np.ndarray)) else [0]*7,
+            "action_applied": {
+                "delta_mm": delta_mm,
+                "delta_deg": delta_deg,
+                "target_pose_mm_deg": target_pose,
+                "gripper_raw": gripper_raw
+            },
+            "robot_ok": robot_ok
+        }
+        log_file.write_text(json.dumps(log_data, ensure_ascii=False, indent=2))
+
+        # 응답
+        return JSONResponse({
+            "ok": True,
+            "action": [float(action[i]) for i in range(7)] if isinstance(action, (list, np.ndarray)) else [0.0]*7,
+            "target_pose": target_pose,
+            "gripper": gripper_raw,
+            "robot_ok": robot_ok
+        })
+
+    @app.get("/api/sensor-data")
+    async def get_sensor_data():
+        """실시간 센서 데이터 반환 (bag 파일 또는 현재 상태에서)"""
+        s = _load()
+        # 녹화 중인지 확인
+        recording = False
+        try:
+            req = urllib.request.Request(f'{TELEOP_API_URL}/status')
+            with urllib.request.urlopen(req, timeout=1) as resp:
+                api_status = json.loads(resp.read())
+                recording = api_status.get('phase') == 'recording'
+        except:
+            pass
+
+        # 현재 상태에서 센서 데이터 추출
+        return JSONResponse({
+            "ok": True,
+            "timestamp": int(time.time() * 1000),
+            "joint_angles": s.get("joint_angles", [0]*6),
+            "tcp_position": s.get("tcp_pose", [0, 0, 0])[:3],  # X, Y, Z만
+            "gripper_position": s.get("gripper", {}).get("position", 0),
+            "recording": recording
+        })
+
     @app.websocket("/ws")
     async def ws_ep(websocket: WebSocket):
         await websocket.accept()
@@ -1751,6 +2727,30 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
                 await websocket.send_json(data)
                 await asyncio.sleep(0.4)
         except Exception: pass
+
+    # 로봇 상태 주기적 업데이트
+    def _sync_robot_status_worker():
+        import urllib.request
+        while True:
+            try:
+                import time; time.sleep(2)
+                req = urllib.request.Request(f'{TELEOP_API_URL}/status')
+                with urllib.request.urlopen(req, timeout=2) as resp:
+                    api_status = json.loads(resp.read())
+                    s = _load()
+                    s['robot_ready'] = api_status.get('robot_ready', False)
+                    s['robot_error'] = api_status.get('robot_error', '')
+                    if 'tcp_pose' in api_status:
+                        s['tcp_pose'] = api_status['tcp_pose']
+                    if 'joint_angles' in api_status:
+                        s['joint_angles'] = api_status['joint_angles']
+                    if 'gripper' in api_status:
+                        s['gripper'] = api_status['gripper']
+                    _save(s)
+            except Exception as e:
+                print(f'[WARN] 로봇 상태 동기화 실패: {e}')
+
+    threading.Thread(target=_sync_robot_status_worker, daemon=True).start()
 
     if not no_camera:
         threading.Thread(target=_camera_worker,

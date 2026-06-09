@@ -21,6 +21,7 @@ class CameraNode:
         self._rgb:   Optional[np.ndarray] = None
         self._depth: Optional[np.ndarray] = None
         self._mode = "dummy"
+        self._last_frame_time: float = 0.0  # epoch seconds of last received frame
 
         # 0순위: ROS2 토픽 (Gazebo bridge 등)
         if ros_image_topic and ros_node:
@@ -78,8 +79,18 @@ class CameraNode:
         arr = np.frombuffer(bytes(msg.data), dtype=np.uint8).reshape(msg.height, msg.width, ch)
         if 'bgr' in enc:
             arr = arr[:, :, ::-1].copy()
+        import time as _time
         with self._lock:
             self._rgb = arr
+            self._last_frame_time = _time.time()
+
+    @property
+    def frame_age(self) -> float:
+        """현재 보유한 프레임의 나이 (초). 값이 클수록 카메라가 오래 끊긴 것."""
+        import time as _time
+        if self._last_frame_time == 0.0:
+            return float('inf')
+        return _time.time() - self._last_frame_time
 
     def _ros_depth_cb(self, msg) -> None:
         enc = msg.encoding.lower()

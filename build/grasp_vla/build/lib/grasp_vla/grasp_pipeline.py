@@ -23,7 +23,10 @@ or
 
 from __future__ import annotations
 
+import subprocess
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import cv2
@@ -58,8 +61,8 @@ class GraspPipelineNode(Node):
         self._declare("smolvla_url",     "http://192.168.50.79:16003")
         self._declare("instruction",     "Approach the red object closely and pick it up.")
         self._declare("action_mode",     "cartesian")   # "cartesian" | "joint"
-        self._declare("max_steps",       10)
-        self._declare("step_hz",         1.0)           # control frequency
+        self._declare("max_steps",       30)
+        self._declare("step_hz",         10)           # control frequency
         self._declare("gripper_port",    "/dev/ttyUSB0")
         self._declare("robot_id",        "dsr01")
         self._declare("home_pose",       "")             # "" = skip; "j1,j2,j3,j4,j5,j6" (degrees)
@@ -69,6 +72,8 @@ class GraspPipelineNode(Node):
         self._declare("mode",            "vla")         # "vla" | "vision"
         self._declare("min_grasp_step",  2)             # 이 스텝 이전에는 그리퍼 close 무시
         self._declare("gripper_close_ratio", 0.85)   # 이 ratio 이상이면 grasp 완료로 판단
+        self._declare("record_video",    True)          # 에피소드 영상 저장 여부
+        self._declare("video_save_dir",  "/home/user/robot_workspace/vla_ws/logs/videos")
 
         # ----------------------------------------------------------------
         # Instantiate sub-components
@@ -163,6 +168,10 @@ class GraspPipelineNode(Node):
         reset = True
         grasped = False
 
+        # 영상 녹화 준비
+        record_video = self.get_parameter("record_video").value
+        video_frames = []
+
         for step in range(max_steps):
             t0 = time.time()
             self.get_logger().info(f"{'━'*30} Step {step:02d} / {max_steps} {'━'*30}")
@@ -174,14 +183,17 @@ class GraspPipelineNode(Node):
                 self.get_logger().warn(f"Step {step}: no camera frame, skipping.")
                 continue
 
+            if record_video:
+                video_frames.append(rgb.copy())
+
             # 5b. Get robot state (joint 6 + gripper 1 = 7-dim)
             joint_state = self._robot.get_joint_state()
             if joint_state is None:
                 self.get_logger().warn(f"Step {step}: no joint state, using zeros.")
                 joint_state = np.zeros(6, dtype=np.float64)
-            joint_state_deg = np.degrees(joint_state[:6])
-            gripper_pos = self._gripper.get_position()   # [0.0, 1.0]
-            state7 = np.append(joint_state_deg, gripper_pos).astype(np.float32)
+            joint_state_deg = np.degrees(joint_state[:6])   # 로그 표시용
+            gripper_pos = self._gripper.get_position()        # [0.0, 1.0]
+            state7 = np.append(joint_state[:6], gripper_pos).astype(np.float32)
 
             j = np.round(joint_state_deg, 2).tolist()
             self.get_logger().info(
@@ -206,16 +218,22 @@ class GraspPipelineNode(Node):
                 self.get_logger().error(f"Step {step}: VLA call failed: {e}")
                 break
 
-            # 5d. Execute EEF action (6 dims)
-            self._robot.execute_action(action[:6])
+            # 5d. 절대 관절 위치로 이동 (서버가 postprocessor에서 역정규화 완료)
+            a_deg = np.degrees(action[:6])
+            self.get_logger().info(
+                f"  액션(°)       {np.round(a_deg, 2).tolist()}  grip={action[6]:.3f}"
+            )
+            self._robot.move_joint(
+                a_deg.tolist(),
+                velocity=20.0,
+                acceleration=40.0,
+            )
 
-            # 5e. Gripper control from action[6]: scale -0.494~+0.333 → 0.0~1.0
-            _G_MIN, _G_MAX = -0.494, 0.333
-            grip_ratio = (float(action[6]) - _G_MIN) / (_G_MAX - _G_MIN)
-            grip_ratio = max(0.0, min(1.0, grip_ratio))
+            # 5e. 그리퍼 (0~1 ratio로 클램프)
+            grip_ratio = max(0.0, min(1.0, float(action[6])))
             self._gripper.set_ratio(grip_ratio)
             self.get_logger().info(
-                f"  그리퍼        raw={action[6]:+.4f}  →  ratio={grip_ratio:.3f}  ({int(grip_ratio * 740)}/740)"
+                f"  그리퍼        {action[6]:+.4f}  →  ratio={grip_ratio:.3f}  ({int(grip_ratio * 740)}/740)"
             )
 
             if grip_ratio >= close_ratio_thr and step >= min_grasp and not grasped:
@@ -232,7 +250,34 @@ class GraspPipelineNode(Node):
             if sleep_t > 0:
                 time.sleep(sleep_t)
 
+        # 영상 저장
+        if record_video and video_frames:
+            self._save_video(video_frames)
+
         return grasped
+
+    def _save_video(self, frames: list) -> None:
+        save_dir = Path(self.get_parameter("video_save_dir").value)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = save_dir / f"episode_{ts}.mp4"
+
+        h, w = frames[0].shape[:2]
+        cmd = [
+            'ffmpeg', '-y',
+            '-f', 'rawvideo', '-vcodec', 'rawvideo',
+            '-s', f'{w}x{h}', '-pix_fmt', 'rgb24',
+            '-r', str(self.get_parameter("step_hz").value),
+            '-i', 'pipe:0',
+            '-vcodec', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',
+            str(out_path),
+        ]
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        for frame in frames:
+            proc.stdin.write(frame.tobytes())
+        proc.stdin.close()
+        proc.wait()
+        self.get_logger().info(f"영상 저장 완료: {out_path}  ({len(frames)} frames)")
 
     # ------------------------------------------------------------------
     # Vision-based grasp
