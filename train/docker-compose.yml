@@ -15,6 +15,7 @@ services:
       - ../scripts:/workspace/scripts
       - ../lerobot:/workspace/lerobot
       - ${HF_CACHE:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ../src:/workspace/src
     runtime: nvidia
     ipc: host
     ulimits:

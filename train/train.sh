@@ -5,7 +5,7 @@
 
 set -eo pipefail
 
-DEFAULT_CONFIG="/workspace/scripts/vla_sft_v.0.3.0.yaml"
+DEFAULT_CONFIG="/workspace/scripts/vla_sft_v.0.4.3.yaml"
 CONFIG="${1:-$DEFAULT_CONFIG}"
 
 # ── YAML 파싱 ─────────────────────────────────────────────────

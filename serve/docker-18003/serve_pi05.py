@@ -78,6 +78,19 @@ tokenizer = None
 tokenizer_max_length = 200
 IMAGE_SIZE = (224, 224)
 
+# QUANTILES normalization stats for observation.state, loaded from the
+# trained checkpoint's normalizer safetensors. The training pipeline applies
+# QUANTILES (mapping [q01, q99] → [-1, 1]) to state before discretization;
+# we must replicate that here for the prompt to match the training distribution.
+state_q01: Optional[np.ndarray] = None
+state_q99: Optional[np.ndarray] = None
+N_STATE_REAL = 0   # actual state dim from training stats (e.g., 7 for v0.4.x)
+
+# MIN_MAX stats for action. The model outputs normalized actions in [-1, 1];
+# inverse MIN_MAX maps them back to the original units (m, rad, etc.).
+action_min: Optional[np.ndarray] = None
+action_max: Optional[np.ndarray] = None
+
 
 def _get_tokenizer(p):
     for attr in ("language_tokenizer", "tokenizer", "text_tokenizer"):
@@ -93,6 +106,7 @@ def _get_tokenizer(p):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global policy, tokenizer, tokenizer_max_length
+    global state_q01, state_q99, N_STATE_REAL, action_min, action_max
     logger.info(f"Loading Pi05 from {MODEL_PATH} on {DEVICE} ...")
     t0 = time.time()
 
@@ -113,6 +127,27 @@ async def lifespan(app: FastAPI):
 
     tokenizer_max_length = getattr(policy.config, "tokenizer_max_length", 200)
     logger.info(f"Tokenizer ready (max_length={tokenizer_max_length})")
+
+    stats_path = os.path.join(
+        MODEL_PATH, "policy_preprocessor_step_2_normalizer_processor.safetensors"
+    )
+    from safetensors.torch import load_file
+    stats = load_file(stats_path)
+    state_q01 = stats["observation.state.q01"].cpu().numpy().astype(np.float32)
+    state_q99 = stats["observation.state.q99"].cpu().numpy().astype(np.float32)
+    N_STATE_REAL = int(state_q01.shape[0])
+    action_min = stats["action.min"].cpu().numpy().astype(np.float32)
+    action_max = stats["action.max"].cpu().numpy().astype(np.float32)
+    logger.info(
+        f"Loaded state QUANTILES stats: N={N_STATE_REAL} "
+        f"q01_range=[{state_q01.min():.4f},{state_q01.max():.4f}] "
+        f"q99_range=[{state_q99.min():.4f},{state_q99.max():.4f}]"
+    )
+    logger.info(
+        f"Loaded action MIN_MAX stats: N={action_min.shape[0]} "
+        f"min_range=[{action_min.min():.4f},{action_min.max():.4f}] "
+        f"max_range=[{action_max.min():.4f},{action_max.max():.4f}]"
+    )
     logger.info(f"Pi05 ready in {time.time() - t0:.1f}s")
     yield
     del policy, tokenizer
@@ -122,7 +157,11 @@ app = FastAPI(title="Pi05 Server", lifespan=lifespan)
 
 
 class PredictRequest(BaseModel):
-    state: List[float]                        # 32-dim proprioceptive state
+    # Raw state in original units (m for translations, rad for rotations, etc.),
+    # padded to 32 dims for backward compat. Only the first N_STATE_REAL dims
+    # (e.g., 7 for v0.4.x) are used; the rest are ignored. The server applies
+    # QUANTILES normalization internally — do NOT pre-normalize on the client.
+    state: List[float]
     base_image: str                           # base64 JPEG/PNG — base camera
     left_wrist_image: Optional[str] = None   # base64 JPEG/PNG — left wrist camera
     right_wrist_image: Optional[str] = None  # base64 JPEG/PNG — right wrist camera
@@ -131,7 +170,9 @@ class PredictRequest(BaseModel):
 
 
 class PredictResponse(BaseModel):
-    action: List[float]   # 32-dim continuous action
+    # Continuous action sliced to the original dataset dim (e.g., 7 for v0.4.x)
+    # — see policy.config.output_features[ACTION].shape[0].
+    action: List[float]
     latency_ms: float
 
 
@@ -148,15 +189,18 @@ def health():
 @app.get("/info")
 def info():
     chunk_size = getattr(policy.config, "chunk_size", 50) if policy else 50
+    action_dim = (
+        policy.config.output_features["action"].shape[0] if policy else N_STATE_REAL
+    )
     return {
         "model": MODEL_PATH,
         "model_host_path": MODEL_HOST_PATH,
         "device": DEVICE,
-        "action_dims": 32,
-        "state_dims": 32,
+        "action_dims": action_dim,
+        "state_dims": N_STATE_REAL,
         "cameras": ["base_image", "left_wrist_image", "right_wrist_image"],
         "chunk_size": chunk_size,
-        "description": "32-dim action via π₀.₅ flow-matching VLA",
+        "description": f"{action_dim}-dim action via π₀.₅ flow-matching VLA",
     }
 
 
@@ -184,14 +228,21 @@ def predict(req: PredictRequest):
 
     try:
         base_img = _decode_image(req.base_image)
-        left_img = _decode_image(req.left_wrist_image) if req.left_wrist_image else base_img.clone()
-        right_img = _decode_image(req.right_wrist_image) if req.right_wrist_image else base_img.clone()
+        left_img = _decode_image(req.left_wrist_image) if req.left_wrist_image else None
+        right_img = _decode_image(req.right_wrist_image) if req.right_wrist_image else None
 
         # PI05 embeds state inside the language prompt (not as a separate tensor).
-        # State must be in [-1, 1]; discretize into 256 bins matching the processor.
-        state_np = np.clip(np.array(req.state, dtype=np.float32), -1.0, 1.0)
+        # Apply QUANTILES normalization (matches NormalizerProcessorStep during
+        # training): map [q01, q99] → [-1, 1] for the first N_STATE_REAL dims,
+        # then discretize into 256 bins. Padding dims (N_STATE_REAL..) are
+        # dropped because the training prompt only contained the real state dims.
+        raw = np.array(req.state[:N_STATE_REAL], dtype=np.float32)
+        denom = (state_q99 - state_q01)
+        denom = np.where(denom == 0, 1e-8, denom)
+        normalized = 2.0 * (raw - state_q01) / denom - 1.0
+        normalized = np.clip(normalized, -1.0, 1.0)
         bins = np.linspace(-1.0, 1.0, 257)[:-1]   # 256 left edges
-        discretized = np.clip(np.digitize(state_np, bins) - 1, 0, 255)
+        discretized = np.clip(np.digitize(normalized, bins) - 1, 0, 255)
         state_str = " ".join(map(str, discretized))
 
         instruction = req.instruction.strip().replace("_", " ").replace("\n", " ")
@@ -209,11 +260,13 @@ def predict(req: PredictRequest):
 
     obs = {
         "observation.images.base_0_rgb": base_img.unsqueeze(0).to(DEVICE),
-        "observation.images.left_wrist_0_rgb": left_img.unsqueeze(0).to(DEVICE),
-        "observation.images.right_wrist_0_rgb": right_img.unsqueeze(0).to(DEVICE),
         "observation.language.tokens": lang["input_ids"].to(DEVICE),
         "observation.language.attention_mask": lang["attention_mask"].bool().to(DEVICE),
     }
+    if left_img is not None:
+        obs["observation.images.left_wrist_0_rgb"] = left_img.unsqueeze(0).to(DEVICE)
+    if right_img is not None:
+        obs["observation.images.right_wrist_0_rgb"] = right_img.unsqueeze(0).to(DEVICE)
 
     t0 = time.time()
     with torch.inference_mode():
@@ -222,9 +275,15 @@ def predict(req: PredictRequest):
 
     if isinstance(action, torch.Tensor):
         action = action.cpu().float().numpy()
-    action_list = np.array(action).flatten().tolist()
+    action = np.array(action, dtype=np.float32).flatten()
 
-    return PredictResponse(action=action_list, latency_ms=round(latency_ms, 2))
+    # Inverse MIN_MAX: model outputs normalized action in [-1, 1];
+    # map back to original units (m, rad) using training stats.
+    # raw = (norm + 1) * (max - min) / 2 + min
+    n = min(action.shape[0], action_min.shape[0])
+    action[:n] = (action[:n] + 1.0) * (action_max[:n] - action_min[:n]) / 2.0 + action_min[:n]
+
+    return PredictResponse(action=action.tolist(), latency_ms=round(latency_ms, 2))
 
 
 if __name__ == "__main__":

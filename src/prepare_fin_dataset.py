@@ -1,12 +1,13 @@
 """
 mid/vla_dataset_v0.2.0 → fin/vla_dataset_v0.2.0 복사 후 quantile stats 추가
 
-호스트에서 실행 (Docker 진입 전):
+호스트 또는 vla-train 컨테이너 안에서 모두 실행 가능:
     python3 /home/user/workspace/jeongwon_lab/src/prepare_fin_dataset.py
 
-- 복사: 호스트에서 직접 수행
-- Quantile stats: 실행 중인 vla-train 컨테이너에 docker exec으로 위임
-  (컨테이너 내 /data/vla 가 호스트 data/vla/와 동일 마운트)
+- 복사: 호스트에서 직접 수행 (컨테이너 안에서는 /data/vla 마운트 경로 기준)
+- Quantile stats:
+    - 호스트: 실행 중인 vla-train 컨테이너에 docker exec으로 위임
+    - 컨테이너 안: Python 코드를 직접 실행
 """
 
 import argparse
@@ -16,13 +17,13 @@ import sys
 from pathlib import Path
 
 WORKSPACE   = Path(__file__).resolve().parent.parent
-DEFAULT_SRC = WORKSPACE / "data/vla/mid/vla_dataset_v0.2.0"
-DEFAULT_DST = WORKSPACE / "data/vla/fin/vla_dataset_v0.2.0"
+DEFAULT_SRC = WORKSPACE / "../data/vla/mid/vla_dataset_v0.4.0"
+DEFAULT_DST = WORKSPACE / "../data/vla/fin/vla_dataset_v0.4.0"
 CONTAINER   = "vla-train"
-REPO_ID     = "vla_dataset_v0.2.0"
+REPO_ID     = "vla_dataset_v0.4.0"
 
 # 호스트 data/vla/ → 컨테이너 /data/vla/ 마운트 기준
-HOST_DATA_VLA = WORKSPACE / "data/vla"
+HOST_DATA_VLA = WORKSPACE / "../data/vla"
 CONTAINER_DATA_VLA = "/data/vla"
 
 
@@ -40,12 +41,39 @@ def copy_dataset(src: Path, dst: Path) -> None:
     print(f"      완료 ({sum(1 for _ in dst.rglob('*'))} 항목)")
 
 
+def _run_quantile_stats_inline(dst_path: str) -> None:
+    import logging
+    logging.basicConfig(level=logging.WARNING)
+
+    from lerobot.scripts.augment_dataset_quantile_stats import (
+        compute_quantile_stats_for_dataset,
+        has_quantile_stats,
+    )
+    from lerobot.datasets import LeRobotDataset, write_stats
+
+    dataset = LeRobotDataset(repo_id=REPO_ID, root=dst_path)
+
+    if has_quantile_stats(dataset.meta.stats):
+        print("이미 quantile stats가 존재합니다. 건너뜁니다.")
+    else:
+        new_stats = compute_quantile_stats_for_dataset(dataset)
+        dataset.meta.stats = new_stats
+        write_stats(new_stats, dataset.meta.root)
+        print("stats.json 업데이트 완료")
+
+
 def add_quantile_stats(dst: Path) -> None:
-    print(f"[2/2] Quantile stats 계산 중 (vla-train 컨테이너)...")
+    in_container = not shutil.which("docker")
 
-    dst_in_container = container_path(dst)
+    if in_container:
+        print("[2/2] Quantile stats 계산 중 (컨테이너 내 직접 실행)...")
+        # 컨테이너 안에서는 dst가 이미 컨테이너 경로이므로 그대로 사용
+        _run_quantile_stats_inline(str(dst))
+    else:
+        print("[2/2] Quantile stats 계산 중 (vla-train 컨테이너)...")
+        dst_in_container = container_path(dst)
 
-    python_code = f"""
+        python_code = f"""
 import logging
 logging.basicConfig(level=logging.WARNING)
 
@@ -66,13 +94,13 @@ else:
     print("stats.json 업데이트 완료")
 """
 
-    result = subprocess.run(
-        ["docker", "exec", CONTAINER, "python", "-c", python_code],
-        text=True,
-    )
-    if result.returncode != 0:
-        print("오류: docker exec 실패")
-        sys.exit(1)
+        result = subprocess.run(
+            ["docker", "exec", CONTAINER, "python", "-c", python_code],
+            text=True,
+        )
+        if result.returncode != 0:
+            print("오류: docker exec 실패")
+            sys.exit(1)
 
 
 def main():
