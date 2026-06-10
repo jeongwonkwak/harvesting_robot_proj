@@ -8,8 +8,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-DATASET_DIR = Path('/home/user/robot_workspace/vla_ws/data/mid/vla_dataset_v0.4.3')
-STATS_FILE = Path('/home/user/robot_workspace/vla_ws/data/fin/vla_dataset_v0.4.3/meta/stats.json')
+DATASET_DIR = Path('/home/user/robot_workspace/vla_ws/data/mid/vla_dataset_v0.5.0')
+STATS_FILE = Path('/home/user/robot_workspace/vla_ws/data/fin/vla_dataset_v0.5.0/meta/stats.json')
 
 # e0509 DH 파라미터
 DH_PARAMS = [

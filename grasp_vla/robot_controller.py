@@ -32,7 +32,8 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 # Doosan message types – graceful fallback so the module still imports
 # even when dsr_msgs2 is not installed (useful for unit tests / dry runs).
 try:
-    from dsr_msgs2.srv import MoveJoint, MoveLine, GetCurrentPose
+    from dsr_msgs2.srv import MoveJoint, MoveLine, GetCurrentPose, JogMulti, MoveStop, MoveSplineTask
+    from std_msgs.msg import Float64MultiArray as _Float64MultiArray
     _DSR_AVAILABLE = True
 except ImportError:
     _DSR_AVAILABLE = False
@@ -94,13 +95,13 @@ class DoosanController:
     # ------------------------------------------------------------------
 
     def _wait_future(self, future, timeout_sec: float) -> bool:
-        """Poll until future is done. Safe to call from any thread."""
+        """Poll until future is done. Executor runs in a separate thread —
+        do NOT call spin_once here; just sleep and let the executor deliver the response."""
         deadline = time.monotonic() + timeout_sec
         while not future.done():
             if time.monotonic() > deadline:
                 return False
-            rclpy.spin_once(self._node, timeout_sec=0.001)
-            time.sleep(0.001)
+            time.sleep(0.005)
         return True
 
     def _init_services(self) -> None:
@@ -110,6 +111,12 @@ class DoosanController:
             MoveLine,  f"{self._prefix}/motion/move_line")
         self._pose_cli  = self._node.create_client(
             GetCurrentPose, f"{self._prefix}/system/get_current_pose")
+        self._jogm_cli   = self._node.create_client(
+            JogMulti,       f"{self._prefix}/motion/jog_multi")
+        self._stop_cli   = self._node.create_client(
+            MoveStop,       f"{self._prefix}/motion/move_stop")
+        self._spline_cli = self._node.create_client(
+            MoveSplineTask, f"{self._prefix}/motion/move_spline_task")
 
         for cli in (self._movej_cli, self._movel_cli, self._pose_cli):
             if not cli.wait_for_service(timeout_sec=5.0):
@@ -233,6 +240,67 @@ class DoosanController:
             self._node.get_logger().warn("move_line service returned None (server may be down).")
         elif not result.success:
             self._node.get_logger().warn("move_line service returned failure.")
+
+    def jog_multi(self, jog_axis: list, speed: float, move_reference: int = 0) -> None:
+        """Continuous cartesian jog. jog_axis: 6-float unit vector [Tx,Ty,Tz,Rx,Ry,Rz],
+        speed: % of max (0=stop, + forward, - backward). move_reference: 0=BASE, 1=TOOL."""
+        if self._sim:
+            self._node.get_logger().info(f"[SIM] jog_multi: {jog_axis} speed={speed:.1f}%")
+            return
+        req = JogMulti.Request()
+        req.jog_axis = [float(v) for v in jog_axis]
+        req.move_reference = int(move_reference)
+        req.speed = float(speed)
+        self._jogm_cli.call_async(req)
+
+    def move_stop(self, stop_mode: int = 3) -> None:
+        """Stop robot motion. stop_mode: 0=QStop_STO, 1=QStop, 2=SStop, 3=Hold(smooth)."""
+        if self._sim:
+            self._node.get_logger().info(f"[SIM] move_stop mode={stop_mode}")
+            return
+        req = MoveStop.Request()
+        req.stop_mode = int(stop_mode)
+        self._stop_cli.call_async(req)
+
+    def move_spline_task(
+        self,
+        waypoints: list,
+        velocity: float = 50.0,
+        acceleration: float = 100.0,
+        blocking: bool = True,
+        timeout_sec: float = 120.0,
+    ) -> None:
+        """TCP 스플라인 이동. waypoints: [[X,Y,Z,Rx,Ry,Rz], ...] (mm/deg), max 100개."""
+        if self._sim:
+            self._node.get_logger().info(f"[SIM] move_spline_task: {len(waypoints)} pts")
+            return
+        if not waypoints or len(waypoints) < 2:
+            self._node.get_logger().warn("move_spline_task: 웨이포인트 2개 이상 필요")
+            return
+        req = MoveSplineTask.Request()
+        pts = []
+        for wp in waypoints[:100]:
+            pt = _Float64MultiArray()
+            pt.data = [float(v) for v in wp]
+            pts.append(pt)
+        req.pos      = pts
+        req.pos_cnt  = len(pts)
+        req.vel      = [float(velocity), float(velocity)]
+        req.acc      = [float(acceleration), float(acceleration)]
+        req.time     = 0.0
+        req.ref      = 0  # DR_BASE
+        req.mode     = 0  # ABSOLUTE
+        req.opt      = 0  # DEFAULT
+        req.sync_type = 1
+        fut = self._spline_cli.call_async(req)
+        if not blocking:
+            return
+        if not self._wait_future(fut, timeout_sec=timeout_sec):
+            self._node.get_logger().warn("move_spline_task timed out.")
+            return
+        result = fut.result()
+        if result is None or not result.success:
+            self._node.get_logger().warn("move_spline_task returned failure.")
 
     def execute_action(self, action: np.ndarray, velocity: float = 20.0, acceleration: float = 40.0) -> None:
         """

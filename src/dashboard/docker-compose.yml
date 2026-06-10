@@ -63,6 +63,7 @@ services:
     pid: "host"
     privileged: true
     volumes:
+      - ./ros2_bridge.py:/app/ros2_bridge.py
       - ./data:/data
       - /opt/ros/humble:/opt/ros/humble:ro
       - /home/user/robot_workspace/doosan_ws/install:/doosan_ws/install:ro

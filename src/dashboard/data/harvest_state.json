@@ -17,7 +17,14 @@
     0.0,
     0.0
   ],
-  "tcp_pose": null,
+  "tcp_pose": [
+    -385.0,
+    450.05,
+    783.13,
+    88.44,
+    87.34,
+    -90.01
+  ],
   "target_count": 15,
   "attempt_history": [],
   "failure_types": {
@@ -36,7 +43,7 @@
   },
   "pending_joint_command": null,
   "pending_tcp_command": null,
-  "last_updated": "2026-06-10T00:50:52.564696",
+  "last_updated": "2026-06-10T15:23:25.549533",
   "gripper": {
     "position": 100.0,
     "raw_pos": 0,

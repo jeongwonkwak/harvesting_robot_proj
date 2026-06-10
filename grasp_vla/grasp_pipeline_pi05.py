@@ -148,8 +148,8 @@ class Pi05Client:
         return Pi05Response(action=action, latency_ms=server_latency)
 
 
-def _encode_image(image: np.ndarray, size: tuple = (224, 224)) -> str:
-    pil = Image.fromarray(image.astype(np.uint8)).resize(size)
+def _encode_image(image: np.ndarray) -> str:
+    pil = Image.fromarray(image.astype(np.uint8))
     buf = io.BytesIO()
     pil.save(buf, format="JPEG", quality=90)
     return base64.b64encode(buf.getvalue()).decode()

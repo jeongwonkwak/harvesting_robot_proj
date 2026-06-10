@@ -33,8 +33,8 @@ st.set_page_config(
 # 사용 가능한 데이터셋 경로 (우선순위 순)
 _CANDIDATE_PATHS = [
     Path("/home/user/robot_workspace/vla_ws/data/mid/vla_dataset_v1.0.0"),
-    Path("/home/user/robot_workspace/vla_ws/data/mid/vla_dataset_v0.4.3"),
-    Path("/home/user/robot_workspace/vla_ws/data/fin/vla_dataset_v0.4.3"),
+    Path("/home/user/robot_workspace/vla_ws/data/mid/vla_dataset_v0.5.0"),
+    Path("/home/user/robot_workspace/vla_ws/data/fin/vla_dataset_v0.5.0"),
 ]
 
 # 실제 존재하는 경로 선택
@@ -54,80 +54,50 @@ CAM2_DIR = VIDEOS_DIR / "observation.images.camera2/chunk-000"
 
 VLA_API_URL = "http://192.168.50.79:18003"
 
-# Episode 0 샘플 Observation State (TCP Pose, 첫 프레임)
-# [x_m, y_m, z_m, rx_rad, ry_rad, rz_rad]
-SAMPLE_EPISODE = 0
-SAMPLE_OBSERVATION_STATE = np.array([0.31287524, 0.27915237, 0.87901123, 1.56872585, 1.50528589, -1.56418996])
-
 # ──────────────────────────────────────────────────────────────────────────────
-# 목업 이미지 로드
+# 데이터 로드 (캐시)
 # ──────────────────────────────────────────────────────────────────────────────
 
 @st.cache_resource
-def load_mock_images() -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-    """데이터셋의 첫 에피소드 이미지 (첫 프레임) 로드"""
+def load_full_df():
+    import pandas as pd
+    return pd.read_parquet(DATA_DIR / "data/chunk-000/file-000.parquet")
 
-    def extract_first_frame(mp4_path: Path) -> Optional[np.ndarray]:
-        """MP4 파일의 첫 프레임 추출"""
-        if not mp4_path.exists():
-            st.warning(f"파일을 찾을 수 없습니다: {mp4_path}")
+@st.cache_resource
+def load_info():
+    import json
+    with open(DATA_DIR / "meta/info.json") as f:
+        return json.load(f)
+
+def load_episode_df(episode: int):
+    df = load_full_df()
+    return df[df["episode_index"] == episode].sort_values("frame_index").reset_index(drop=True)
+
+
+def extract_frame(mp4_path: Path, frame_index: int) -> Optional[np.ndarray]:
+    """MP4 파일에서 지정 프레임 추출"""
+    if not mp4_path.exists():
+        return None
+    try:
+        cap = cv2.VideoCapture(str(mp4_path))
+        if not cap.isOpened():
             return None
-
-        try:
-            cap = cv2.VideoCapture(str(mp4_path))
-            if not cap.isOpened():
-                st.warning(f"비디오를 열 수 없습니다: {mp4_path}")
-                return None
-
-            ret, frame = cap.read()
-            cap.release()
-
-            if ret:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                return frame
-            else:
-                st.warning(f"프레임을 읽을 수 없습니다: {mp4_path}")
-                return None
-        except Exception as e:
-            st.warning(f"프레임 추출 실패 ({mp4_path}): {e}")
-            return None
-
-    # 첫 파일의 첫 프레임
-    cam1_file = CAM1_DIR / "file-000.mp4"
-    cam2_file = CAM2_DIR / "file-000.mp4"
-
-    # 디버그: 경로 정보 출력
-    st.info(f"데이터셋: {DATA_DIR.name}")
-    st.caption(f"📁 Camera 1 경로: {cam1_file}")
-    st.caption(f"📁 Camera 2 경로: {cam2_file}")
-
-    cam1_frame = None
-    cam2_frame = None
-
-    if cam1_file.exists():
-        cam1_frame = extract_first_frame(cam1_file)
-    else:
-        st.warning(f"Camera 1 파일을 찾을 수 없습니다: {cam1_file}")
-
-    if cam2_file.exists():
-        cam2_frame = extract_first_frame(cam2_file)
-    else:
-        st.warning(f"Camera 2 파일을 찾을 수 없습니다: {cam2_file}")
-
-    return cam1_frame, cam2_frame
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        ret, frame = cap.read()
+        cap.release()
+        if ret:
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        return None
+    except Exception:
+        return None
 
 
 
-def resize_image(img: np.ndarray, size: Tuple[int, int] = (224, 224)) -> np.ndarray:
-    """이미지를 지정된 크기로 리사이즈"""
-    return cv2.resize(img, size, interpolation=cv2.INTER_LINEAR)
-
-
-def encode_image_to_base64(image: np.ndarray, size: Tuple[int, int] = (256, 256)) -> str:
+def encode_image_to_base64(image: np.ndarray) -> str:
     """이미지를 base64 문자열로 인코딩"""
     try:
         from PIL import Image
-        pil_img = Image.fromarray(image.astype(np.uint8)).resize(size)
+        pil_img = Image.fromarray(image.astype(np.uint8))
         buf = io.BytesIO()
         pil_img.save(buf, format="JPEG", quality=90)
         return base64.b64encode(buf.getvalue()).decode()
@@ -340,50 +310,134 @@ def call_vla_api(state_vec, cam1, cam2, instruction, reset_episode: bool = False
 # ──────────────────────────────────────────────────────────────────────────────
 
 st.title("VLA 추론 테스트 (실제 API)")
-st.caption(f"🌐 서버: {VLA_API_URL}/predict")
+st.caption(f"🌐 서버: {VLA_API_URL}/predict  |  데이터셋: {DATA_DIR.name}")
 
-# 그리퍼 초기값
-gripper_raw = 600  # 0-740 범위
-gripper_percent = (gripper_raw / 740) * 100  # 퍼센트로 변환
-reset_episode = False
+# ── 에피소드 선택 ─────────────────────────────────────────────────────────────
+total_episodes = load_info().get("total_episodes", 32)
+selected_episode = st.number_input(
+    "에피소드 선택",
+    min_value=0, max_value=total_episodes - 1, value=0, step=1,
+    key="episode_selector",
+)
 
-with st.spinner("이미지 로드 중..."):
-    cam1, cam2 = load_mock_images()
+# 에피소드 바뀌면 프레임 슬라이더 리셋
+if st.session_state.get("_last_episode") != selected_episode:
+    st.session_state["_last_episode"] = selected_episode
+    st.session_state["frame_slider"] = 0
 
-if cam1 is not None or cam2 is not None:
-    col1, col2 = st.columns(2)
+# ── 에피소드 데이터 로드 ──────────────────────────────────────────────────────
+ep_df = load_episode_df(selected_episode)
+total_frames = len(ep_df)
+_grip_rows = ep_df[ep_df["action"].apply(lambda x: x[6] > 0.85)]["frame_index"]
+grip_change_frame = int(_grip_rows.min()) if len(_grip_rows) > 0 else None
 
-    with col1:
-        st.subheader("카메라 1 (base_image)")
-        if cam1 is not None:
-            st.image(cam1)
-            st.caption(f"크기: {cam1.shape[1]}x{cam1.shape[0]}")
-        else:
-            st.error("카메라 1 이미지를 로드할 수 없습니다")
+# ── 프레임 선택 슬라이더 ──────────────────────────────────────────────────────
+st.subheader("프레임 선택")
+if "_pending_frame" in st.session_state:
+    st.session_state["frame_slider"] = st.session_state.pop("_pending_frame")
+_grip_label = f"파지 시점: {grip_change_frame}" if grip_change_frame is not None else "파지 없음"
+selected_frame = st.slider(
+    f"Episode {selected_episode} — 프레임 (총 {total_frames}개, {_grip_label})",
+    min_value=0,
+    max_value=total_frames - 1,
+    value=0,
+    key="frame_slider",
+    step=1,
+)
 
-    with col2:
-        st.subheader("카메라 2 (left_wrist_image)")
-        if cam2 is not None:
-            st.image(cam2)
-            st.caption(f"크기: {cam2.shape[1]}x{cam2.shape[0]}")
-        else:
-            st.error("카메라 2 이미지를 로드할 수 없습니다")
-else:
-    st.error("이미지를 로드할 수 없습니다. 데이터 경로를 확인하세요.")
+row = ep_df[ep_df["frame_index"] == selected_frame].iloc[0]
+state_arr = row["observation.state"]   # [x,y,z,rx,ry,rz,grip]
+gt_action  = row["action"]             # [dx,dy,dz,drx,dry,drz,grip_next]
+
+# ── 액션 타임라인 차트 ────────────────────────────────────────────────────────
+with st.expander("액션 타임라인 차트", expanded=True):
+    try:
+        from plotly.subplots import make_subplots
+        import plotly.graph_objects as go
+
+        actions_mat = np.stack(ep_df["action"].values)  # (N, 7)
+        frames_idx  = ep_df["frame_index"].values
+
+        fig = make_subplots(
+            rows=2, cols=1, shared_xaxes=True,
+            subplot_titles=("위치 델타 (mm)", "그리퍼 다음 상태 (/ 740)"),
+            vertical_spacing=0.15,
+        )
+        _mk = dict(size=4, opacity=0.6)
+        fig.add_trace(go.Scatter(x=frames_idx, y=actions_mat[:, 0] * 1000,
+                                 name="ΔX (mm)", mode="lines+markers", marker=_mk,
+                                 line=dict(color="#EF4444", width=1.5)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=frames_idx, y=actions_mat[:, 1] * 1000,
+                                 name="ΔY (mm)", mode="lines+markers", marker=_mk,
+                                 line=dict(color="#22C55E", width=1.5)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=frames_idx, y=actions_mat[:, 2] * 1000,
+                                 name="ΔZ (mm)", mode="lines+markers", marker=_mk,
+                                 line=dict(color="#3B82F6", width=1.5)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=frames_idx, y=actions_mat[:, 6] * 740,
+                                 name="Grip_next", mode="lines+markers", marker=_mk,
+                                 line=dict(color="#F59E0B", width=1.5)), row=2, col=1)
+
+        fig.add_vline(x=selected_frame, line_width=2, line_color="#FACC15",
+                      annotation_text=f"F{selected_frame}", annotation_position="top right")
+        if grip_change_frame is not None:
+            fig.add_vline(x=grip_change_frame, line_width=1.5, line_dash="dash", line_color="#C084FC",
+                          annotation_text=f"파지 F{grip_change_frame}", annotation_position="top left")
+
+        fig.update_layout(height=420, margin=dict(t=50, b=30, l=60, r=20),
+                          template="plotly_dark", legend=dict(orientation="h", y=1.08),
+                          clickmode="event+select")
+        fig.update_xaxes(title_text="Frame (클릭하면 해당 프레임으로 이동)", row=2, col=1)
+        fig.update_yaxes(title_text="mm", row=1, col=1)
+        fig.update_yaxes(title_text="/ 740", row=2, col=1)
+
+        event = st.plotly_chart(fig, use_container_width=True, on_select="rerun")
+        if event and event.selection and event.selection.points:
+            clicked_x = int(round(event.selection.points[0]["x"]))
+            clicked_x = max(0, min(total_frames - 1, clicked_x))
+            if clicked_x != st.session_state.get("_chart_last_click"):
+                st.session_state["_chart_last_click"] = clicked_x
+                st.session_state["_pending_frame"] = clicked_x
+                st.rerun()
+    except ImportError:
+        st.warning("plotly 미설치 — `pip install plotly` 후 재시작하세요.")
+
+# ── 이미지 로드 ───────────────────────────────────────────────────────────────
+cam1 = extract_frame(CAM1_DIR / f"file-{selected_episode:03d}.mp4", selected_frame)
+cam2 = extract_frame(CAM2_DIR / f"file-{selected_episode:03d}.mp4", selected_frame)
+
+col1, col2 = st.columns(2)
+with col1:
+    st.subheader("카메라 1 (base_image)")
+    if cam1 is not None:
+        st.image(cam1)
+        st.caption(f"{cam1.shape[1]}×{cam1.shape[0]}")
+    else:
+        st.error("카메라 1 이미지 없음")
+with col2:
+    st.subheader("카메라 2 (left_wrist_image)")
+    if cam2 is not None:
+        st.image(cam2)
+        st.caption(f"{cam2.shape[1]}×{cam2.shape[0]}")
+    else:
+        st.error("카메라 2 이미지 없음")
 
 st.divider()
 
+# ── 현재 로봇 상태 ────────────────────────────────────────────────────────────
 st.header("현재 로봇 상태")
+if grip_change_frame is not None:
+    grip_phase = "파지 후" if state_arr[6] >= 1.0 else ("파지 시점" if selected_frame == grip_change_frame else ("파지 전" if selected_frame < grip_change_frame else "파지 전"))
+else:
+    grip_phase = "파지 없음"
+st.caption(f"Episode {selected_episode}, frame {selected_frame} / {total_frames-1}  —  {grip_phase}")
 
-st.caption(f"Episode {SAMPLE_EPISODE}, 첫 프레임 (관측된 TCP Pose)")
-
-# Observation State에서 TCP 포즈 추출
-tcp_x = SAMPLE_OBSERVATION_STATE[0] * 1000  # m → mm
-tcp_y = SAMPLE_OBSERVATION_STATE[1] * 1000
-tcp_z = SAMPLE_OBSERVATION_STATE[2] * 1000
-tcp_rx = SAMPLE_OBSERVATION_STATE[3]  # rad
-tcp_ry = SAMPLE_OBSERVATION_STATE[4]
-tcp_rz = SAMPLE_OBSERVATION_STATE[5]
+tcp_x  = state_arr[0] * 1000
+tcp_y  = state_arr[1] * 1000
+tcp_z  = state_arr[2] * 1000
+tcp_rx = state_arr[3]
+tcp_ry = state_arr[4]
+tcp_rz = state_arr[5]
+gripper_raw = round(state_arr[6] * 740)
 
 col1, col2, col3, col4 = st.columns(4)
 with col1:
@@ -393,7 +447,7 @@ with col2:
 with col3:
     st.metric("높이 Z", f"{tcp_z:.2f} mm")
 with col4:
-    st.metric("그리퍼", f"{gripper_raw}", delta="81%")
+    st.metric("그리퍼", f"{gripper_raw} / 740", delta=f"ratio {state_arr[6]:.3f}")
 
 col5, col6, col7 = st.columns(3)
 with col5:
@@ -403,39 +457,51 @@ with col6:
 with col7:
     st.metric("회전 Rz", f"{np.degrees(tcp_rz):.2f}°")
 
+# ── 정답 액션 ─────────────────────────────────────────────────────────────────
+with st.expander("정답 액션 (GT)", expanded=True):
+    gc1, gc2, gc3, gc4, gc5, gc6, gc7 = st.columns(7)
+    dx_mm   = float(gt_action[0]) * 1000
+    dy_mm   = float(gt_action[1]) * 1000
+    dz_mm   = float(gt_action[2]) * 1000
+    drx_deg = float(gt_action[3]) * 57.2958
+    dry_deg = float(gt_action[4]) * 57.2958
+    drz_deg = float(gt_action[5]) * 57.2958
+    grip_raw = float(gt_action[6]) * 740
+    for col_ui, label, val in zip(
+        [gc1, gc2, gc3, gc4, gc5, gc6, gc7],
+        ["ΔX (mm)", "ΔY (mm)", "ΔZ (mm)", "ΔRx (°)", "ΔRy (°)", "ΔRz (°)", "Grip_next"],
+        [dx_mm, dy_mm, dz_mm, drx_deg, dry_deg, drz_deg, grip_raw],
+    ):
+        with col_ui:
+            if label == "Grip_next":
+                st.metric(label, f"{val:.0f} / 740", delta=f"ratio {float(gt_action[6]):.3f}")
+            else:
+                st.metric(label, f"{val:.3f}")
+
 st.divider()
 
+# ── VLA 추론 ──────────────────────────────────────────────────────────────────
 st.header("VLA 추론")
 
 col_inst, col_btn = st.columns([3, 1])
-
 with col_inst:
     instruction = st.text_input(
         "작업 지시문",
         value="Grasp the strawberry stem and pick it.",
         help="VLA에 전달할 작업 지시"
     )
-
 with col_btn:
     st.write("")
-    run_inference = st.button(
-        "실행",
-        key="run_inference_btn",
-        use_container_width=True,
-        type="primary"
-    )
+    run_inference = st.button("실행", key="run_inference_btn", use_container_width=True, type="primary")
+
+reset_episode = st.checkbox(
+    "reset_episode (매 추론마다 큐 초기화 — 테스트 시 항상 켜야 함)",
+    value=True,
+    help="pi05는 chunk_size=50 액션 큐를 씁니다. False면 이전 추론 결과를 그대로 반환해 프레임을 바꿔도 같은 값이 나옵니다."
+)
 
 if run_inference:
-    # State vector: 현재 TCP 포즈 + 그리퍼
-    state_vec = np.array([
-        tcp_x / 1000,  # mm → m
-        tcp_y / 1000,
-        tcp_z / 1000,
-        tcp_rx,  # 라디안
-        tcp_ry,
-        tcp_rz,
-        gripper_percent / 100,  # 퍼센트 → 비율
-    ] + [0.0] * 25)
+    state_vec = np.array(list(state_arr) + [0.0] * 25)
 
     with st.spinner(f"실제 VLA 추론 중... ({VLA_API_URL})"):
         try:
@@ -447,45 +513,63 @@ if run_inference:
     if vla_result is not None:
         st.session_state.last_inference = vla_result
         st.session_state.last_state = state_vec
-        st.session_state.last_episode = SAMPLE_EPISODE
+        st.session_state.last_frame = selected_frame
 
 st.divider()
 
 if "last_inference" in st.session_state:
     result = st.session_state.last_inference
-    action = result['action']
+    action = result["action"]
+    inferred_frame = st.session_state.get("last_frame", "?")
 
-    st.success("추론 완료")
+    st.success(f"추론 완료 (frame {inferred_frame})")
 
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("레이턴시", f"{result['latency_ms']:.1f} ms")
     with col2:
-        st.metric("에피소드", f"Episode {st.session_state.last_episode}")
+        st.metric("에피소드", f"Episode {selected_episode}")
     with col3:
-        st.metric("에피소드 리셋", "O" if result['reset_episode'] else "X")
+        st.metric("에피소드 리셋", "O" if result["reset_episode"] else "X")
 
-    st.subheader("VLA Action 벡터")
+    st.subheader("모델 출력 vs 정답 비교")
 
-    col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
-    with col1:
-        st.metric("ΔX (mm)", f"{action[0]*1000:.1f}")
-    with col2:
-        st.metric("ΔY (mm)", f"{action[1]*1000:.1f}")
-    with col3:
-        st.metric("ΔZ (mm)", f"{action[2]*1000:.1f}")
-    with col4:
-        st.metric("ΔRx (°)", f"{action[3]*57.2958:.1f}")
-    with col5:
-        st.metric("ΔRy (°)", f"{action[4]*57.2958:.1f}")
-    with col6:
-        st.metric("ΔRz (°)", f"{action[5]*57.2958:.1f}")
-    with col7:
-        # 실서버 action[6] = ratio(0.811~1.0) → ×740으로 raw 환산 표시
-        st.metric("Gripper", f"{action[6]*740:.0f} / 740", delta=f"ratio {action[6]:.3f}")
+    # 정답은 추론 당시 프레임 기준
+    gt_row = ep_df[ep_df["frame_index"] == inferred_frame]
+    gt_a = gt_row.iloc[0]["action"] if len(gt_row) else [0]*7
+
+    header_cols = st.columns([2, 1, 1, 1, 1, 1, 1, 1])
+    for col_ui, label in zip(header_cols[1:], ["ΔX(mm)", "ΔY(mm)", "ΔZ(mm)", "ΔRx(°)", "ΔRy(°)", "ΔRz(°)", "Grip/740"]):
+        col_ui.markdown(f"**{label}**")
+
+    scales = [1000, 1000, 1000, 57.2958, 57.2958, 57.2958, 740]
+    row_cols = st.columns([2, 1, 1, 1, 1, 1, 1, 1])
+    row_cols[0].markdown("**모델 (역정규화)**")
+    for col_ui, val, scale in zip(row_cols[1:], action[:7], scales):
+        col_ui.markdown(f"{val*scale:.1f}")
+
+    gt_vals_disp = [
+        float(gt_a[0])*1000, float(gt_a[1])*1000, float(gt_a[2])*1000,
+        float(gt_a[3])*57.2958, float(gt_a[4])*57.2958, float(gt_a[5])*57.2958,
+        float(gt_a[6])*740,
+    ]
+    row_cols2 = st.columns([2, 1, 1, 1, 1, 1, 1, 1])
+    row_cols2[0].markdown("**정답**")
+    for col_ui, val in zip(row_cols2[1:], gt_vals_disp):
+        col_ui.markdown(f"{val:.3f}")
+
+    raw_action = result.get("raw_action")
+    if raw_action is not None:
+        st.caption("raw_action: 모델이 직접 출력한 정규화 공간 값 [-1, 1]. 역정규화 전.")
+        raw_header = st.columns([2, 1, 1, 1, 1, 1, 1, 1])
+        for col_ui, label in zip(raw_header[1:], ["ΔX", "ΔY", "ΔZ", "ΔRx", "ΔRy", "ΔRz", "Grip"]):
+            col_ui.markdown(f"**{label}**")
+        row_raw = st.columns([2, 1, 1, 1, 1, 1, 1, 1])
+        row_raw[0].markdown("**raw (정규화)**")
+        for col_ui, val in zip(row_raw[1:], raw_action[:7]):
+            col_ui.markdown(f"{float(val):.3f}")
 
     st.subheader("계산된 목표 포즈")
-    # 현재 TCP 포즈를 배열로 변환
     current_tcp = np.array([tcp_x, tcp_y, tcp_z,
                              np.degrees(tcp_rx), np.degrees(tcp_ry), np.degrees(tcp_rz)])
     target_pose = calculate_target_pose(current_tcp, action)
@@ -498,40 +582,18 @@ if "last_inference" in st.session_state:
         st.write("**회전 (deg)**")
         st.code(f"Rx: {target_pose[3]:.2f}\nRy: {target_pose[4]:.2f}\nRz: {target_pose[5]:.2f}")
 
-    with st.expander("상세 분석"):
-        analysis_col1, analysis_col2 = st.columns(2)
-
-        with analysis_col1:
-            st.write("**선형 이동 분석**")
-            deltas = [action[i]*1000 for i in range(3)]
-            magnitude = math.sqrt(sum(d**2 for d in deltas))
-            st.metric("전체 이동 거리", f"{magnitude:.2f} mm")
-            for name, val in [("X", deltas[0]), ("Y", deltas[1]), ("Z", deltas[2])]:
-                st.write(f"Δ{name}: {val:+.2f} mm")
-
-        with analysis_col2:
-            st.write("**회전 분석**")
-            rots = [action[i+3]*57.2958 for i in range(3)]
-            magnitude_rot = math.sqrt(sum(r**2 for r in rots))
-            st.metric("전체 회전각", f"{magnitude_rot:.2f}°")
-            for name, val in [("Rx", rots[0]), ("Ry", rots[1]), ("Rz", rots[2])]:
-                st.write(f"Δ{name}: {val:+.2f}°")
-
     with st.expander("모든 데이터 보기"):
-        st.write(f"**Full Action Vector ({len(action)}-dim)**")
-        action_df = {
-            "Index": list(range(len(action))),
-            "Value": [f"{v:.6f}" for v in action]
-        }
-        st.dataframe(action_df, use_container_width=True)
-
-        st.write("**Input State Vector (raw, 서버가 정규화)**")
-        state_vec = st.session_state.last_state
-        state_df = {
-            "Index": list(range(len(state_vec))),
-            "Value": [f"{v:.6f}" for v in state_vec]
-        }
-        st.dataframe(state_df, use_container_width=True)
+        st.write(f"**Full Action Vector — 역정규화 ({len(action)}-dim)**")
+        st.dataframe({"Index": list(range(len(action))), "Value": [f"{v:.6f}" for v in action]},
+                     use_container_width=True)
+        if raw_action is not None:
+            st.write(f"**Full Raw Action Vector — 정규화 공간 ({len(raw_action)}-dim)**")
+            st.dataframe({"Index": list(range(len(raw_action))), "Value": [f"{float(v):.6f}" for v in raw_action]},
+                         use_container_width=True)
+        st.write("**Input State Vector (raw)**")
+        sv = st.session_state.last_state
+        st.dataframe({"Index": list(range(len(sv))), "Value": [f"{v:.6f}" for v in sv]},
+                     use_container_width=True)
 
 else:
     st.info("추론을 실행하면 결과가 여기에 표시됩니다")

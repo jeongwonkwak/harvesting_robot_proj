@@ -13,15 +13,15 @@
 #
 # ── 여기만 수정하세요 ────────────────────────────────────────────────────────
 
-DATASET_NAME="vla_dataset_v0.4.2"
+DATASET_NAME="vla_dataset_v0.5.0"
 
-RAW_DIR="/home/user/robot_workspace/vla_ws/data/raw/final_project/vla_dataset_v0.4.0"     # 변환할 raw bag 경로
+RAW_DIR="/home/user/robot_workspace/vla_ws/data/raw/final_project/vla_dataset_v0.5.0"     # 변환할 raw bag 경로
 MID_DIR="/home/user/robot_workspace/vla_ws/data/mid"                   # LeRobot 데이터셋 저장 경로
 LEROBOT_DIR="/home/user/robot_workspace/vla_ws/lerobot"
 
 # ── 에피소드 선택 ──────────────────────────────────────────────────────────
 # EPISODE_MODE: "all" (전체) | "range" (범위) | "list" (목록)
-EPISODE_MODE="range"
+EPISODE_MODE="all"
 
 # EPISODE_MODE="range" 일 때: 시작 및 종료 에피소드 번호 (0-indexed)
 EPISODE_START=17

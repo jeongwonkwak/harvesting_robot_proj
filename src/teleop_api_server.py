@@ -60,12 +60,60 @@ import uvicorn
 ROBOT_ID          = 'dsr01'
 VELOCITY          = 1500.0  # mm/s (일반 이동)
 ACCELERATION      = 250.0   # mm/s²
-HOME_VELOCITY     = 500.0   # mm/s (홈 포즈 이동만 더 느리게)
-HOME_ACCELERATION = 50.0    # mm/s² (낮춤)
+HOME_VELOCITY     = 200.0   # mm/s (홈 포즈 이동만 더 느리게)
+HOME_ACCELERATION = 20.0    # mm/s²
 GRIPPER_HOME_POS  = 600
 GRIPPER_MAX_POS   = 740  # 파지: 0~740
-STEP_MM           = 20.0  # 한 번 이동 거리 (mm)
-STEP_DEG          = 5.0  # Rx, Ry, Rz 회전 각도 (더 미세하게)
+STEP_MM           = 20.0  # 한 번 이동 거리 (mm) — 현재 미사용 (jog 모드로 대체)
+STEP_DEG          = 5.0  # Rx, Ry, Rz 회전 각도
+
+# ── 관절 소프트 리미트 (MoveIt joint_limits.yaml 기준, 추가 5° 마진) ───────────
+def _load_joint_soft_limits():
+    import yaml, math
+    _YAML  = ('/home/user/robot_workspace/doosan_ws/install/'
+              'dsr_moveit_config_e0509/share/dsr_moveit_config_e0509/'
+              'config/joint_limits.yaml')
+    _MARGIN_RAD = math.radians(5.0)  # MoveIt 리미트에서 추가 5° 여유
+    _NAMES = ['joint_1','joint_2','joint_3','joint_4','joint_5','joint_6']
+    try:
+        with open(_YAML) as f:
+            cfg = yaml.safe_load(f)
+        jl = cfg.get('joint_limits', {})
+        ordered = []
+        for n in _NAMES:
+            lo = float(jl[n]['min_position']) + _MARGIN_RAD
+            hi = float(jl[n]['max_position']) - _MARGIN_RAD
+            ordered.append((lo, hi))
+        print('[LIMIT] 소프트 리미트 (MoveIt ±5°):',
+              [(round(math.degrees(l),1), round(math.degrees(h),1)) for l,h in ordered])
+        return ordered
+    except Exception as e:
+        print(f'[LIMIT] yaml 파싱 실패, 기본값 사용: {e}')
+        return [(-3.05, 3.05), (-1.57, 1.57), (-2.27, 2.27),
+                (-3.05, 3.05), (-2.27, 2.27), (-3.05, 3.05)]
+
+JOINT_SOFT_LIMITS = _load_joint_soft_limits()  # [(lo_rad, hi_rad), ...]
+
+# ── jog 모드 상수 (jog_multi 서비스 기반 — 드라이버가 직접 연속 속도 제어) ────
+# JogMulti 최대 속도: 250mm/s × 1.73 ≈ 432mm/s
+# JOG_SPEED_PCT=20 → 평행이동 ~85mm/s (안정적인 속도)
+JOG_SPEED_PCT    = 20.0  # 기본 jog 속도 (%) — speed_scale로 조정 가능
+JOG_AXIS_MAP = {
+    'forward':   [ 0,  1,  0,  0,  0,  0],  # +Y
+    'backward':  [ 0, -1,  0,  0,  0,  0],  # -Y
+    'left':      [-1,  0,  0,  0,  0,  0],  # -X
+    'right':     [ 1,  0,  0,  0,  0,  0],  # +X
+    'up':        [ 0,  0,  1,  0,  0,  0],  # +Z
+    'down':      [ 0,  0, -1,  0,  0,  0],  # -Z
+    'rx_plus':   [ 0,  0,  0,  1,  0,  0],
+    'rx_minus':  [ 0,  0,  0, -1,  0,  0],
+    'ry_plus':   [ 0,  0,  0,  0,  1,  0],
+    'ry_minus':  [ 0,  0,  0,  0, -1,  0],
+    'rz_plus':   [ 0,  0,  0,  0,  0,  1],
+    'rz_minus':  [ 0,  0,  0,  0,  0, -1],
+    'rotate_cw': [ 0,  0,  0,  0,  0,  1],  # Rz+ (시계방향)
+    'rotate_ccw':[ 0,  0,  0,  0,  0, -1],  # Rz- (반시계방향)
+}
 QOS_FILE          = str(WS_DIR / 'config/bag_qos_overrides.yaml')
 CAMERA_TOPIC      = '/camera/camera/color/image_raw'
 CAMERA2_TOPIC     = '/camera2/camera2/color/image_raw'
@@ -124,6 +172,9 @@ class TeleopAPIServer:
         # 데이터 변환 상태
         self._converting     = False
         self._convert_progress = 0  # 0-100
+
+        # jog 모드 상태
+        self._jogging  = False  # 현재 jog 중 여부
 
         # 카메라는 호스트에서 실행 (컨테이너 내 librealsense는 D455 펌웨어와 호환되지 않아
         # 프레임이 수신되지 않음). start_cameras.sh 로 호스트에서 띄운다.
@@ -221,21 +272,25 @@ class TeleopAPIServer:
         fail_count = 0
         while True:
             try:
-                eef = self._robot.get_eef_pose()
-                if eef is not None:
-                    with self._eef_lock:
-                        self._eef_cache = eef
-                    msg = self._Float32MultiArray()
-                    msg.data = eef.tolist()
-                    self._eef_pub.publish(msg)
-                    fail_count = 0
-                else:
-                    fail_count += 1
+                # jog 중에는 GetCurrentPose 서비스 호출을 건너뜀.
+                # jog_multi 와 동시에 20Hz 서비스 콜이 들어가면 드라이버 큐가
+                # 포화되어 흔들림·연결 끊김의 원인이 된다.
+                if not self._jogging:
+                    eef = self._robot.get_eef_pose()
+                    if eef is not None:
+                        with self._eef_lock:
+                            self._eef_cache = eef
+                        msg = self._Float32MultiArray()
+                        msg.data = eef.tolist()
+                        self._eef_pub.publish(msg)
+                        fail_count = 0
+                    else:
+                        fail_count += 1
 
                 grip_msg = self._Float32()
-                # 그리퍼 위치를 0-740 범위에서 0-1 ratio로 정규화해서 publish
+                # get_position()은 이미 0~1 ratio 반환 (0=열림, 1=닫힘)
                 pos = float(self._gripper.get_position())
-                grip_msg.data = max(0.0, min(1.0, pos / GRIPPER_MAX_POS))
+                grip_msg.data = max(0.0, min(1.0, pos))
                 self._gripper_pub.publish(grip_msg)
 
             except Exception:
@@ -269,6 +324,50 @@ class TeleopAPIServer:
 
         threading.Thread(target=_run, daemon=True).start()
         return True, 'OK'
+
+    # ── jog 모드 (jog_multi 서비스 — 드라이버가 직접 연속 속도 제어) ──────────────
+
+    def start_jog(self, cmd: str, speed_scale: float = 1.0, angle_scale: float = 1.0):
+        """방향 버튼 press → jog 시작. jog_multi 서비스 한 번 호출로 연속 이동."""
+        if not self._robot_ready:
+            return
+        axis = JOG_AXIS_MAP.get(cmd)
+        if axis is None:
+            return
+
+        # 이미 jog 중이면 먼저 정지 후 드라이버가 처리할 시간을 준다.
+        # move_stop 과 jog_multi 가 call_async 로 순서 보장 없이 도착하면 흔들림 발생.
+        if self._jogging:
+            self._jogging = False
+            self._robot.move_stop(stop_mode=3)
+            time.sleep(0.12)  # 드라이버 감속 처리 대기
+
+        is_rotation = any(axis[3:])
+        scale = angle_scale if is_rotation else speed_scale
+        self._jogging = True
+        self._robot.jog_multi(axis, JOG_SPEED_PCT * scale)
+        threading.Thread(target=self._jog_watchdog, daemon=True).start()
+
+    def stop_jog(self):
+        """방향 버튼 release → move_stop으로 즉시 정지."""
+        self._jogging = False
+        if self._robot_ready:
+            self._robot.move_stop(stop_mode=3)  # DR_HOLD: 부드럽게 감속 정지
+
+    def _jog_watchdog(self):
+        """jog 중 50ms마다 관절각 감시 → 소프트 리미트 초과 시 즉시 정지."""
+        import math
+        while self._jogging:
+            js = self._robot.get_joint_state()  # radians, ndarray(6) or None
+            if js is not None:
+                for i, (lo, hi) in enumerate(JOINT_SOFT_LIMITS):
+                    if js[i] < lo or js[i] > hi:
+                        deg = math.degrees(js[i])
+                        print(f'[JOG LIMIT] J{i+1} = {deg:.1f}° 소프트 리미트 초과 → 정지')
+                        self._jogging = False
+                        self._robot.move_stop(stop_mode=3)
+                        return
+            time.sleep(0.05)
 
     def move_gripper(self, pos: int):
         if not self._robot_ready:
@@ -338,10 +437,10 @@ class TeleopAPIServer:
 
         def _stop():
             try:
-                print('[녹화] 홈 복귀 중...')
-                self.move_to_home(move_gripper=False)  # 그리퍼는 파지 상태 유지, 3초 대기
-                print('[녹화] 로봇 정지 상태 녹화 중...')
-                time.sleep(5)  # 완전히 정지한 상태를 5초간 추가 녹화
+                # print('[녹화] 홈 복귀 중...')
+                # self.move_to_home(move_gripper=False)  # 그리퍼는 파지 상태 유지, 3초 대기
+                # print('[녹화] 로봇 정지 상태 녹화 중...')
+                # time.sleep(5)  # 완전히 정지한 상태를 5초간 추가 녹화
                 print('[녹화] 종료 중...')
                 if self._bag_proc:
                     try:
@@ -386,17 +485,23 @@ class TeleopAPIServer:
             'converting':   self._converting,
             'convert_progress': self._convert_progress,
         }
+        # _eef_cache: 로봇에서 직접 읽은 TCP pose — 브리지 파일보다 우선
+        if eef is not None:
+            state['tcp_pose'] = eef.tolist()
+
         try:
             import json
             state_file = os.environ.get('HARVEST_STATE_FILE', '/data/harvest_state.json')
             if os.path.exists(state_file):
                 with open(state_file) as f:
                     bridge_state = json.load(f)
-                    state.update({
-                        'tcp_pose': bridge_state.get('tcp_pose'),
-                        'joint_angles': bridge_state.get('joint_angles'),
-                        'gripper': bridge_state.get('gripper'),
-                    })
+                # None이 아닌 값만 반영 (유효값을 None으로 덮어쓰지 않음)
+                tcp  = bridge_state.get('tcp_pose')
+                ja   = bridge_state.get('joint_angles')
+                grip = bridge_state.get('gripper')
+                if tcp  is not None: state['tcp_pose']      = tcp
+                if ja   is not None: state['joint_angles']  = ja
+                if grip is not None: state['gripper']       = grip
         except Exception:
             pass
         return state
@@ -431,6 +536,7 @@ async def api_move(request: Request):
     cmd = b.get('command', 'stop')
 
     if cmd == 'stop':
+        _server.stop_jog()
         return JSONResponse({'ok': True})
     elif cmd == 'joint':
         angles = b.get('angles', [0]*6)
@@ -443,24 +549,38 @@ async def api_move(request: Request):
         threading.Thread(target=lambda: _server._robot.move_line(pose, velocity=velocity), daemon=True).start()
         return JSONResponse({'ok': True})
 
-    delta = MOVE_MAP.get(cmd)
-    if not delta:
+    if cmd not in JOG_AXIS_MAP:
         return JSONResponse({'ok': False, 'error': f'알 수 없는 커맨드: {cmd}'}, status_code=400)
 
-    # 회전 각도 조절 (angle_scale)
+    # 버튼 hold → jog 모드로 연속 이동
+    speed_scale = float(b.get('speed_scale', 1.0))
     angle_scale = float(b.get('angle_scale', 1.0))
-    if angle_scale != 1.0 and cmd in ['rx_plus', 'rx_minus', 'ry_plus', 'ry_minus', 'rz_plus', 'rz_minus']:
-        delta = delta.copy()
-        for key in delta:
-            if key.startswith('dr'):  # drx, dry, drz
-                delta[key] *= angle_scale
+    _server.start_jog(cmd, speed_scale=speed_scale, angle_scale=angle_scale)
+    return JSONResponse({'ok': True, 'message': f'jog 시작: {cmd}'})
 
-    ok, msg = _server.move_delta(**delta)
-    return JSONResponse({'ok': ok, 'message': msg})
+
+@app.post('/spline')
+async def api_spline(request: Request):
+    if not _server._robot_ready:
+        return JSONResponse({'ok': False, 'message': '로봇 미연결'})
+    b = await request.json()
+    waypoints = b.get('waypoints', [])
+    if len(waypoints) < 2:
+        return JSONResponse({'ok': False, 'error': '웨이포인트 2개 이상 필요'}, status_code=400)
+    velocity     = float(b.get('velocity', 50.0))
+    acceleration = float(b.get('acceleration', velocity * 2))
+    threading.Thread(
+        target=lambda: _server._robot.move_spline_task(
+            waypoints, velocity=velocity, acceleration=acceleration),
+        daemon=True,
+    ).start()
+    return JSONResponse({'ok': True, 'message': f'spline 이동 시작: {len(waypoints)}pts'})
 
 
 @app.post('/gripper')
 async def api_gripper(request: Request):
+    if not _server._robot_ready:
+        return JSONResponse({'ok': False, 'message': '로봇 미연결'})
     b = await request.json()
     _server.move_gripper(int(b.get('position', GRIPPER_HOME_POS)))
     return JSONResponse({'ok': True})

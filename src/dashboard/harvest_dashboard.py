@@ -920,17 +920,19 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
 
 /* SENSOR GRAPH PANEL */
 .sensor-graph-container{grid-column:3;grid-row:2;
-  background:var(--card);border:1px solid var(--border);border-radius:var(--r);
-  box-shadow:var(--sh);display:flex;flex-direction:column;overflow:hidden;
+  display:flex;flex-direction:row;gap:4px;
   min-height:0;margin-bottom:0}
-.sensor-graph-header{padding:8px 12px;border-bottom:1px solid var(--border);
-  display:flex;align-items:center;gap:8px;background:var(--bg);flex-shrink:0}
+.sensor-pane{flex:1;min-width:0;
+  background:var(--card);border:1px solid var(--border);border-radius:var(--r);
+  box-shadow:var(--sh);display:flex;flex-direction:column;overflow:hidden}
+.sensor-graph-header{padding:6px 10px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:6px;background:var(--bg);flex-shrink:0}
 .sensor-graph-header .ph-dot{width:4px;height:4px;border-radius:50%;flex-shrink:0}
-.sensor-graph-header-title{font-size:9.5px;font-weight:700;color:var(--t2);
+.sensor-graph-header-title{font-size:9px;font-weight:700;color:var(--t2);
   text-transform:uppercase;letter-spacing:.7px}
-.sensor-graph-header-status{margin-left:auto;font-size:8.5px;color:var(--t3)}
+.sensor-graph-header-status{margin-left:auto;font-size:8px;color:var(--t3)}
 .sensor-graph-content{flex:1;overflow:hidden;position:relative}
-#sensor-graph-plot{width:100%;height:100%;display:block}
+#sensor-graph-plot,#action-timeline-plot{width:100%;height:100%;display:block}
 .sensor-graph-empty{position:absolute;inset:0;display:flex;align-items:center;
   justify-content:center;color:var(--t3);font-size:11px;background:var(--bg)}
 
@@ -1035,17 +1037,35 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
   <!-- 하단 그리드 (4열, 2행: 상단 제어판, 하단 그래프) -->
   <div class="bot">
 
-    <!-- 센서 그래프 (상단 전체 너비) -->
+    <!-- 센서 그래프 컨테이너 (좌우 2분할) -->
     <div class="sensor-graph-container">
-      <div class="sensor-graph-header">
-        <div class="ph-dot" id="sensor-graph-dot" style="background:var(--purple)"></div>
-        <span class="sensor-graph-header-title">실시간 센서 모니터링</span>
-        <span class="sensor-graph-header-status" id="sensor-status">데이터 대기 중...</span>
+
+      <!-- 왼쪽: 관절 상태 -->
+      <div class="sensor-pane">
+        <div class="sensor-graph-header">
+          <div class="ph-dot" id="sensor-graph-dot" style="background:var(--purple)"></div>
+          <span class="sensor-graph-header-title">관절 · 그리퍼</span>
+          <span class="sensor-graph-header-status" id="sensor-status">대기 중...</span>
+        </div>
+        <div class="sensor-graph-content">
+          <div id="sensor-graph-plot"></div>
+          <div class="sensor-graph-empty" id="sensor-graph-empty">데이터 수집 중...</div>
+        </div>
       </div>
-      <div class="sensor-graph-content">
-        <div id="sensor-graph-plot"></div>
-        <div class="sensor-graph-empty" id="sensor-graph-empty">데이터 수집 중. 녹화 시작 후 표시됩니다...</div>
+
+      <!-- 오른쪽: 액션 타임라인 (TCP X/Y/Z + Gripper) -->
+      <div class="sensor-pane">
+        <div class="sensor-graph-header">
+          <div class="ph-dot" style="background:var(--cyan)"></div>
+          <span class="sensor-graph-header-title">액션 타임라인</span>
+          <span class="sensor-graph-header-status" id="action-status">TCP · Gripper</span>
+        </div>
+        <div class="sensor-graph-content">
+          <div id="action-timeline-plot"></div>
+          <div class="sensor-graph-empty" id="action-timeline-empty">데이터 수집 중...</div>
+        </div>
       </div>
+
     </div>
 
     <!-- ① 로봇 상태 + 방향조작 -->
@@ -1101,12 +1121,12 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
             <span id="rot-spd-val" style="font-size:8px;color:var(--t3)">5°</span>
           </div>
           <div class="rot-btns" style="margin-top:4px">
-            <button class="rot-btn" onclick="teleopMove('rx_plus')">Rx+</button>
-            <button class="rot-btn" onclick="teleopMove('rx_minus')">Rx-</button>
-            <button class="rot-btn" onclick="teleopMove('ry_plus')">Ry+</button>
-            <button class="rot-btn" onclick="teleopMove('ry_minus')">Ry-</button>
-            <button class="rot-btn" onclick="teleopMove('rz_plus')">Rz+</button>
-            <button class="rot-btn" onclick="teleopMove('rz_minus')">Rz-</button>
+            <button class="rot-btn" onmousedown="sendTeleop('rx_plus')"  onmouseup="sendTeleop('stop')" ontouchstart="sendTeleop('rx_plus')"  ontouchend="sendTeleop('stop')">Rx+</button>
+            <button class="rot-btn" onmousedown="sendTeleop('rx_minus')" onmouseup="sendTeleop('stop')" ontouchstart="sendTeleop('rx_minus')" ontouchend="sendTeleop('stop')">Rx-</button>
+            <button class="rot-btn" onmousedown="sendTeleop('ry_plus')"  onmouseup="sendTeleop('stop')" ontouchstart="sendTeleop('ry_plus')"  ontouchend="sendTeleop('stop')">Ry+</button>
+            <button class="rot-btn" onmousedown="sendTeleop('ry_minus')" onmouseup="sendTeleop('stop')" ontouchstart="sendTeleop('ry_minus')" ontouchend="sendTeleop('stop')">Ry-</button>
+            <button class="rot-btn" onmousedown="sendTeleop('rz_plus')"  onmouseup="sendTeleop('stop')" ontouchstart="sendTeleop('rz_plus')"  ontouchend="sendTeleop('stop')">Rz+</button>
+            <button class="rot-btn" onmousedown="sendTeleop('rz_minus')" onmouseup="sendTeleop('stop')" ontouchstart="sendTeleop('rz_minus')" ontouchend="sendTeleop('stop')">Rz-</button>
           </div>
         </div>
         <!-- 데이터 수집 구분선 -->
@@ -1384,6 +1404,11 @@ let sensorGraphData = {
   x: [], y: [], z: [],
   gripper: []
 };
+/* 액션 타임라인 데이터 (TCP 델타 mm + 그리퍼 raw /740) */
+let actionTimelineData = {
+  dx: [], dy: [], dz: [], gripper: [],
+  _prevTcp: null   // 이전 샘플 TCP [x,y,z] — delta 계산용
+};
 const MAX_GRAPH_POINTS = 100;
 
 async function updateSensorGraph() {
@@ -1414,6 +1439,16 @@ async function updateSensorGraph() {
     sensorGraphData.z.push(tcpNorm[2]);
     sensorGraphData.gripper.push(data.gripper_position || 0);
 
+    // 액션 타임라인: TCP 델타 (mm) + 그리퍼 raw /740
+    const curTcp = data.tcp_position;  // [x, y, z] in mm
+    const prev   = actionTimelineData._prevTcp;
+    actionTimelineData.dx.push(prev ? curTcp[0] - prev[0] : 0);
+    actionTimelineData.dy.push(prev ? curTcp[1] - prev[1] : 0);
+    actionTimelineData.dz.push(prev ? curTcp[2] - prev[2] : 0);
+    actionTimelineData._prevTcp = curTcp.slice();
+    // 100%=열림=raw0, 0%=닫힘=raw740
+    actionTimelineData.gripper.push(Math.round((1 - (data.gripper_position || 0) / 100) * 740));
+
     // 최대값 초과 시 제거
     while (sensorGraphData.timestamps.length > MAX_GRAPH_POINTS) {
       sensorGraphData.timestamps.shift();
@@ -1421,6 +1456,10 @@ async function updateSensorGraph() {
       sensorGraphData.j4.shift(); sensorGraphData.j5.shift(); sensorGraphData.j6.shift();
       sensorGraphData.x.shift(); sensorGraphData.y.shift(); sensorGraphData.z.shift();
       sensorGraphData.gripper.shift();
+    }
+    while (actionTimelineData.dx.length > MAX_GRAPH_POINTS) {
+      actionTimelineData.dx.shift(); actionTimelineData.dy.shift();
+      actionTimelineData.dz.shift(); actionTimelineData.gripper.shift();
     }
 
     // 그래프 렌더링
@@ -1458,6 +1497,47 @@ async function updateSensorGraph() {
       document.getElementById('sensor-graph-empty').style.display = 'none';
       document.getElementById('sensor-status').textContent = data.recording ? '● 녹화 중' : '데이터 수집 중';
       document.getElementById('sensor-status').style.color = data.recording ? 'var(--red)' : 'var(--t3)';
+    }
+
+    // 액션 타임라인 렌더링 (vla_inference_mock_test.py 스타일: 2분할)
+    if (actionTimelineData.dx.length > 0) {
+      const ax = Array.from({length: actionTimelineData.dx.length}, (_, i) => i);
+      const atTraces = [
+        {x: ax, y: actionTimelineData.dx, name: 'ΔX', mode: 'lines+markers',
+         marker: {size: 3, opacity: 0.7}, line: {color: '#EF4444', width: 1.5}, yaxis: 'y'},
+        {x: ax, y: actionTimelineData.dy, name: 'ΔY', mode: 'lines+markers',
+         marker: {size: 3, opacity: 0.7}, line: {color: '#22C55E', width: 1.5}, yaxis: 'y'},
+        {x: ax, y: actionTimelineData.dz, name: 'ΔZ', mode: 'lines+markers',
+         marker: {size: 3, opacity: 0.7}, line: {color: '#3B82F6', width: 1.5}, yaxis: 'y'},
+        {x: ax, y: actionTimelineData.gripper, name: 'Grip /740', mode: 'lines+markers',
+         marker: {size: 3, opacity: 0.7}, line: {color: '#F59E0B', width: 1.5}, yaxis: 'y2'},
+      ];
+      const atLayout = {
+        margin: {l: 45, r: 15, t: 18, b: 28},
+        xaxis: {showgrid: true, gridwidth: 0.5, gridcolor: '#e2e8f0', tickfont: {size: 8}},
+        yaxis:  {domain: [0.52, 1.0], title: 'mm', showgrid: true, gridwidth: 0.5,
+                 gridcolor: '#e2e8f0', zeroline: true, zerolinecolor: '#94A3B8',
+                 zerolinewidth: 1, tickfont: {size: 8}},
+        yaxis2: {domain: [0.0, 0.44], title: '/740', range: [0, 740],
+                 showgrid: true, gridwidth: 0.5, gridcolor: '#e2e8f0', tickfont: {size: 8}},
+        plot_bgcolor: '#fff', paper_bgcolor: '#fff',
+        font: {family: "'JetBrains Mono', monospace", size: 9, color: '#475569'},
+        legend: {x: 0, y: 1.07, xanchor: 'left', yanchor: 'bottom', font: {size: 8},
+                 bgcolor: 'rgba(255,255,255,0.85)', bordercolor: '#e2e8f0', borderwidth: 1,
+                 orientation: 'h'},
+        hovermode: 'x unified',
+        annotations: [
+          {text: '위치 델타 (mm)', x: 0.01, y: 0.99, xref: 'paper', yref: 'paper',
+           xanchor: 'left', yanchor: 'top', font: {size: 8, color: '#64748b'}, showarrow: false},
+          {text: '그리퍼 (/740)', x: 0.01, y: 0.44, xref: 'paper', yref: 'paper',
+           xanchor: 'left', yanchor: 'top', font: {size: 8, color: '#64748b'}, showarrow: false},
+        ],
+      };
+      Plotly.react('action-timeline-plot', atTraces, atLayout, {responsive: true, displayModeBar: false});
+      document.getElementById('action-timeline-empty').style.display = 'none';
+      const recTxt = data.recording ? '● 녹화 중' : 'ΔX · ΔY · ΔZ · Grip';
+      document.getElementById('action-status').textContent = recTxt;
+      document.getElementById('action-status').style.color = data.recording ? 'var(--red)' : 'var(--t3)';
     }
   } catch (e) {
     console.log('센서 데이터 로드 실패:', e);
@@ -1653,15 +1733,22 @@ function loadCurTcp(){
     const e=document.getElementById('ti'+i);if(e)e.value=v.toFixed(i<3?1:2);});
 }
 async function sendTcpCmd(){
-  const pose=[];
-  for(let i=0;i<6;i++){const e=document.getElementById('ti'+i);pose.push(parseFloat(e?.value)||0);}
+  const target=[];
+  for(let i=0;i<6;i++){const e=document.getElementById('ti'+i);target.push(parseFloat(e?.value)||0);}
   const vel=parseFloat(document.getElementById('tvel').value)||10;
   const badge=document.getElementById('tg-badge');
+  // 현재 TCP를 첫 번째 웨이포인트로, 목표를 두 번째로 → MoveSplineTask 곡선 이동
+  const cur=(lastState||{}).tcp_pose;
+  const body = cur && cur.length===6
+    ? {waypoints:[cur, target], velocity:vel}   // 현재 → 목표 spline
+    : {target, velocity:vel};                    // 현재 위치 미확인 시 단순 이동
+  const endpoint = cur && cur.length===6 ? '/spline' : '/move';
+  const payload  = cur && cur.length===6 ? body : {command:'tcp', pose:target, velocity:vel};
   try{
-    const r=await fetch(TELEOP_API+'/move',{method:'POST',
-      headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'tcp',pose,velocity:vel})});
+    const r=await fetch(TELEOP_API+endpoint,{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     if(r.ok){
-      badge.textContent='TCP 전송';
+      badge.textContent='Spline 전송';
       badge.style.cssText='background:var(--purple-bg);border-color:#ddd6fe;color:var(--purple-tx)';
       setTimeout(()=>{badge.textContent='대기';badge.style.cssText='';},3500);
     }
@@ -1680,16 +1767,18 @@ async function sendTeleop(cmd){
     body:JSON.stringify({command:cmd,speed:sp})}).catch(()=>{});
 }
 
-/* 그리퍼 */
+/* 그리퍼 — position은 UI 단위(0~100%, 100=열림, 0=닫힘) */
 async function sendGripCmd(pos){
   const position=pos!==undefined?pos:parseFloat(document.getElementById('g-inp').value??100);
   const force=parseFloat(document.getElementById('g-force').value)||30;
   let state='open';
   if(position<=5)state='closed';else if(position<95)state='grasping';
+  /* UI % → raw 0-740 (100%=열림=0, 0%=닫힘=740) */
+  const raw=Math.round((1-position/100)*740);
   const badge=document.getElementById('tg-badge');
   try{
     const r=await fetch(TELEOP_API+'/gripper',{method:'POST',
-      headers:{'Content-Type':'application/json'},body:JSON.stringify({position,force,state})});
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({position:raw,force,state})});
     if(r.ok){
       badge.textContent='그리퍼 전송';
       badge.style.cssText='background:var(--cyan-bg);border-color:#a5f3fc;color:var(--cyan-tx)';
@@ -2015,10 +2104,24 @@ async function teleopMove(cmd) {
 }
 
 async function teleopGripper(pos) {
-  await fetch(TELEOP_API+'/gripper', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({position:pos})
-  }).catch(()=>{});
+  const badge = document.getElementById('gr-badge');
+  try {
+    const r = await fetch(TELEOP_API+'/gripper', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({position:pos})
+    });
+    const d = await r.json().catch(()=>({}));
+    if(r.ok && d.ok !== false) {
+      if(badge){badge.textContent='전송';badge.style.cssText='background:var(--cyan-bg);border-color:#a5f3fc;color:var(--cyan-tx)';}
+      setTimeout(()=>{if(badge)badge.style.cssText='';},2000);
+    } else {
+      if(badge){badge.textContent=d.message||'오류';badge.style.cssText='background:var(--red-bg);border-color:#fecaca;color:var(--red-tx)';}
+      setTimeout(()=>{if(badge)badge.style.cssText='';},3000);
+    }
+  } catch(e) {
+    if(badge){badge.textContent='연결 실패';badge.style.cssText='background:var(--red-bg);border-color:#fecaca;color:var(--red-tx)';}
+    setTimeout(()=>{if(badge)badge.style.cssText='';},3000);
+  }
 }
 
 async function moveHome() {
@@ -2129,17 +2232,44 @@ setInterval(async()=>{
   updateRecBadge(d.phase||'idle', d.robot_ready, d.robot_error);
 }, 1000);
 
-/* 기존 sendTeleop: D-pad 버튼 → 로봇 실제 이동도 호출 */
+/* sendTeleop: D-pad/회전 버튼 → jog 시작/정지 */
 const _origSendTeleop = sendTeleop;
 sendTeleop = async function(cmd) {
   const sp = parseFloat(document.getElementById('tp-speed')?.value||0.2);
+  const rotSp = parseFloat(document.getElementById('rot-speed')?.value||5);
   const ts = document.getElementById('teleop-st');
   if(ts){ts.textContent=TELEOP_LBL[cmd]||cmd;
     ts.style.color=cmd==='stop'?'var(--t3)':'var(--blue)';}
   await fetch('/api/teleop', {method:'POST', headers:{'Content-Type':'application/json'},
     body:JSON.stringify({command:cmd, speed:sp})}).catch(()=>{});
-  if(cmd!=='stop') await teleopMove(cmd);
+  /* stop 포함 모든 명령을 teleop API로 전달 (jog 정지에 필요) */
+  const body = {command: cmd, speed_scale: sp, angle_scale: rotSp / 5};
+  await fetch(TELEOP_API+'/move', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)}).catch(()=>{});
 };
+
+/* 키보드 단축키 → sendTeleop
+   ↑↓←→ : Y/X 이동   Q/E : Z 상하   A/D : Rz 회전   Esc/Space : 정지  */
+const _KEY_MAP = {
+  'ArrowUp':    'forward',  'ArrowDown':  'backward',
+  'ArrowLeft':  'left',     'ArrowRight': 'right',
+  'KeyQ':       'up',       'KeyE':       'down',
+  'KeyA':       'rotate_ccw', 'KeyD':     'rotate_cw',
+};
+const _activeKeys = new Set();
+document.addEventListener('keydown', e => {
+  const cmd = _KEY_MAP[e.code];
+  if (!cmd) return;
+  if (e.code === 'Escape' || e.code === 'Space') { sendTeleop('stop'); return; }
+  if (_activeKeys.has(e.code)) return;  // 키 반복 무시
+  _activeKeys.add(e.code);
+  sendTeleop(cmd);
+});
+document.addEventListener('keyup', e => {
+  if (!_KEY_MAP[e.code]) return;
+  _activeKeys.delete(e.code);
+  sendTeleop('stop');
+});
 
 /* 듀얼 카메라 */
 const CAM_SRCS=['/camera/0','/camera/1'];
@@ -2740,12 +2870,13 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
                     s = _load()
                     s['robot_ready'] = api_status.get('robot_ready', False)
                     s['robot_error'] = api_status.get('robot_error', '')
-                    if 'tcp_pose' in api_status:
-                        s['tcp_pose'] = api_status['tcp_pose']
-                    if 'joint_angles' in api_status:
-                        s['joint_angles'] = api_status['joint_angles']
-                    if 'gripper' in api_status:
-                        s['gripper'] = api_status['gripper']
+                    # None으로 유효값을 덮어쓰지 않음
+                    tcp  = api_status.get('tcp_pose')
+                    ja   = api_status.get('joint_angles')
+                    grip = api_status.get('gripper')
+                    if tcp  is not None: s['tcp_pose']     = tcp
+                    if ja   is not None: s['joint_angles'] = ja
+                    if grip is not None: s['gripper']      = grip
                     _save(s)
             except Exception as e:
                 print(f'[WARN] 로봇 상태 동기화 실패: {e}')
@@ -2862,8 +2993,8 @@ def main():
     p.add_argument('--camera-id-1', type=int, default=int(os.environ.get('CAMERA_ID_1', 0)))
     p.add_argument('--serial-cam0', default=os.environ.get('REALSENSE_SERIAL_0', ''))
     p.add_argument('--serial-cam1', default=os.environ.get('REALSENSE_SERIAL_1', ''))
-    p.add_argument('--camera-url-0', default=os.environ.get('CAMERA_URL_0', ''))
-    p.add_argument('--camera-url-1', default=os.environ.get('CAMERA_URL_1', ''))
+    p.add_argument('--camera-url-0', default=os.environ.get('CAMERA_URL_0', 'http://localhost:8766/cam0'))
+    p.add_argument('--camera-url-1', default=os.environ.get('CAMERA_URL_1', 'http://localhost:8766/cam1'))
     p.add_argument('--port',      type=int, default=8765)
     p.add_argument('--host',      default='0.0.0.0')
     p.add_argument('--update', choices=['start_harvest','harvest_success','harvest_fail','damage','reset'])
