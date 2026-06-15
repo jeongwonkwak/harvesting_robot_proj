@@ -18,12 +18,12 @@
     0.0
   ],
   "tcp_pose": [
-    -385.0,
-    450.05,
-    783.13,
-    88.44,
-    87.34,
-    -90.01
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
   ],
   "target_count": 15,
   "attempt_history": [],
@@ -43,12 +43,17 @@
   },
   "pending_joint_command": null,
   "pending_tcp_command": null,
-  "last_updated": "2026-06-10T15:23:25.549533",
+  "last_updated": "2026-06-15T08:31:34.021323",
   "gripper": {
     "position": 100.0,
     "raw_pos": 0,
     "state": "open",
     "force": 30.0
   },
-  "planned_duration_hours": 0
+  "planned_duration_hours": 0,
+  "pending_teleop_command": {
+    "command": "stop",
+    "speed": 0.2,
+    "sent_at": "2026-06-13T10:37:20.675423"
+  }
 }

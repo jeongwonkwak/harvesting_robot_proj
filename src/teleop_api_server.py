@@ -614,7 +614,7 @@ async def api_record_start(request: Request):
     episode = b.get('episode') or _auto_episode(raw_dir)
     ok, msg = _server.start_recording(
         episode=episode, task=b.get('task',''),
-        category=b.get('category',''), raw_dir=raw_dir,
+        category=b.get('category','unripe_occlusion'), raw_dir=raw_dir,
         home_pose=b.get('home_pose',''),
     )
     return JSONResponse({'ok': ok, 'episode': episode, 'message': msg})

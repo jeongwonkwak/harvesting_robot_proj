@@ -575,7 +575,7 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
 
 /* BOTTOM ROW */
 .bot{flex:1;min-height:0;display:grid;
-  grid-template-columns:185px 295px 1fr;
+  grid-template-columns:270px 255px 1fr;
   grid-template-rows:auto 0.6fr 1.4fr;
   gap:5px;overflow:hidden}
 
@@ -764,6 +764,35 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
   border-radius:3px;font-family:var(--mono);font-size:10px;
   background:var(--bg);outline:none;text-align:right}
 .g-fld input:focus{border-color:var(--cyan);background:var(--cyan-bg)}
+
+/* STAGE WAYPOINTS */
+.sw-row{display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;margin-bottom:5px;overflow:hidden}
+.sw-header{display:flex;align-items:center;gap:6px;padding:5px 8px;background:var(--bg);cursor:default}
+.sw-num{font-size:9px;font-weight:700;width:16px;height:16px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--blue);color:#fff;flex-shrink:0}
+.sw-name{font-size:10px;font-weight:700;color:var(--t1);flex:1;letter-spacing:.3px}
+.sw-saved{font-size:8px;color:var(--green-tx);background:var(--green-bg);
+  border:1px solid #86efac;padding:1px 5px;border-radius:3px;display:none}
+.sw-btn{padding:3px 8px;border-radius:4px;border:none;cursor:pointer;font-size:9px;font-weight:700}
+.sw-btn.run{background:var(--blue);color:#fff}.sw-btn.run:hover{background:var(--blue-tx)}
+.sw-btn.run:disabled{background:var(--border);color:var(--t3);cursor:not-allowed}
+.sw-btn.cap{background:var(--cyan-bg);border:1px solid #a5f3fc;color:var(--cyan-tx)}
+.sw-btn.cap:hover{background:#cffafe;border-color:#67e8f9}
+.sw-btn.tog{background:none;border:none;color:var(--t3);font-size:11px;cursor:pointer;padding:2px 4px}
+.sw-body{display:none;padding:6px 8px 8px;background:var(--panel);border-top:1px solid var(--border)}
+.sw-body.open{display:block}
+.sw-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:3px;margin-bottom:5px}
+.sw-cell{display:flex;flex-direction:column;gap:1px}
+.sw-cell label{font-size:8px;color:var(--t3);font-weight:700}
+.sw-cell input{width:100%;padding:2px 4px;border:1px solid var(--border);border-radius:3px;
+  font-family:var(--mono);font-size:10px;background:var(--bg);outline:none;text-align:right}
+.sw-cell input:focus{border-color:var(--purple);background:var(--purple-bg)}
+.sw-foot{display:flex;gap:4px;align-items:center}
+.sw-vel{display:flex;flex-direction:column;gap:1px}
+.sw-vel label{font-size:8px;color:var(--t3);font-weight:700}
+.sw-vel input{width:44px;padding:2px 4px;border:1px solid var(--border);border-radius:3px;
+  font-family:var(--mono);font-size:10px;background:var(--bg);outline:none;text-align:right}
 
 /* CAMERA */
 .cam-body{flex:1;min-height:0;position:relative;background:#0a0f1e;
@@ -1146,11 +1175,11 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
           <div class="rec-inp-row">
             <span class="rec-inp-lbl">태스크</span>
             <input class="rec-inp" id="rec-task" type="text"
-              value="Grasp the strawberry stem and pick it.">
+              value="Find the path to the strawberry stem and grasp it.">
           </div>
           <div class="rec-inp-row">
             <span class="rec-inp-lbl">카테고리</span>
-            <input class="rec-inp" id="rec-cat" type="text" placeholder="no_occlusion">
+            <input class="rec-inp" id="rec-cat" type="text" placeholder="unripe_occlusion" value="unripe_occlusion">
           </div>
           <!-- 홈 포즈 -->
           <div class="rec-inp-row">
@@ -1193,6 +1222,15 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
             <button class="grip-btn" onclick="teleopGripper(740)">파지</button>
             <button class="grip-btn" onclick="teleopGripper(600)">홈(600)</button>
           </div>
+          <!-- 단계별 웨이포인트 구분선 -->
+          <div style="height:2px;background:linear-gradient(90deg,var(--green),var(--cyan));border-radius:1px;margin:6px 0 5px;opacity:.35"></div>
+          <div style="display:flex;align-items:center;gap:4px;margin-bottom:4px">
+            <div class="sec-lbl" style="color:var(--green-tx);margin:0">단계별 웨이포인트</div>
+            <span class="ph-badge" id="sw-badge" style="background:var(--green-bg);border-color:#86efac;color:var(--green-tx);margin-left:auto">대기</span>
+            <button class="jbtn s" style="font-size:8px;padding:2px 5px" onclick="swSaveToServer()">저장</button>
+            <button class="jbtn s" style="font-size:8px;padding:2px 5px" onclick="swReset()">초기화</button>
+          </div>
+          <div id="sw-list"></div>
           <!-- VLA 추론 구분선 -->
           <div style="height:2px;background:linear-gradient(90deg,var(--purple),var(--blue));border-radius:1px;margin:6px 0 5px;opacity:.35"></div>
           <div class="sec-lbl" style="color:var(--purple-tx)">VLA 추론 제어</div>
@@ -1204,7 +1242,7 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
           <!-- 지시 텍스트 입력 -->
           <div class="rec-inp-row">
             <span class="rec-inp-lbl">태스크 지시</span>
-            <input class="rec-inp" id="vla-instruction" value="Grasp the strawberry stem and pick it.">
+            <input class="rec-inp" id="vla-instruction" value="Find the path to the strawberry stem and grasp it.">
           </div>
           <!-- 에피소드 리셋 체크박스 -->
           <label style="font-size:9px;color:var(--t3);margin-bottom:5px;display:flex;align-items:center;gap:3px">
@@ -1754,6 +1792,147 @@ async function sendTcpCmd(){
     }
   }catch(e){}
 }
+
+/* ── STAGE WAYPOINTS ─────────────────────────────────────── */
+const SW_KEY = 'sw_stages_v1';
+const SW_DEFAULTS = [
+  {name:'APPROACH', x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:null,vel:10},
+  {name:'SEARCH',   x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:null,vel:10},
+  {name:'ALIGN',    x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:null,vel:10},
+  {name:'GRASP',    x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:0,   vel:5 },
+  {name:'HOME',     x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:100, vel:15},
+];
+
+function swLoad(){
+  try{ return JSON.parse(localStorage.getItem(SW_KEY)) || SW_DEFAULTS.map(s=>({...s})); }
+  catch{ return SW_DEFAULTS.map(s=>({...s})); }
+}
+function swSave(stages){ localStorage.setItem(SW_KEY, JSON.stringify(stages)); }
+
+function swHasPose(s){ return s.x!==0||s.y!==0||s.z!==0||s.rx!==0||s.ry!==0||s.rz!==0; }
+
+function swRender(){
+  const stages = swLoad();
+  const list = document.getElementById('sw-list');
+  list.innerHTML = stages.map((s,i)=>{
+    const saved = swHasPose(s);
+    const gripVal = s.gripper===null?'':s.gripper;
+    const gripPlaceholder = s.gripper===null?'(없음)':'';
+    return `
+    <div class="sw-row" id="sw-row-${i}">
+      <div class="sw-header">
+        <div class="sw-num">${i+1}</div>
+        <div class="sw-name">${s.name}</div>
+        <span class="sw-saved" id="sw-saved-${i}" style="display:${saved?'inline':'none'}">저장됨</span>
+        <button class="sw-btn cap" onclick="swCapture(${i})" title="현재 로봇 포즈 캡처">캡처</button>
+        <button class="sw-btn run" id="sw-run-${i}" onclick="swExecute(${i})">▶ 실행</button>
+        <button class="sw-btn tog" onclick="swToggle(${i})">▼</button>
+      </div>
+      <div class="sw-body" id="sw-body-${i}">
+        <div class="sw-grid">
+          <div class="sw-cell"><label>X (mm)</label><input type="number" id="sw-${i}-x"  step="0.1" value="${s.x}"  onchange="swUpdate(${i},'x',this.value)"></div>
+          <div class="sw-cell"><label>Y (mm)</label><input type="number" id="sw-${i}-y"  step="0.1" value="${s.y}"  onchange="swUpdate(${i},'y',this.value)"></div>
+          <div class="sw-cell"><label>Z (mm)</label><input type="number" id="sw-${i}-z"  step="0.1" value="${s.z}"  onchange="swUpdate(${i},'z',this.value)"></div>
+          <div class="sw-cell"><label>Gripper (%)</label><input type="number" id="sw-${i}-g" step="1" min="0" max="100" value="${gripVal}" placeholder="${gripPlaceholder}" onchange="swUpdate(${i},'gripper',this.value)"></div>
+          <div class="sw-cell"><label>RX (°)</label><input type="number" id="sw-${i}-rx" step="0.01" value="${s.rx}" onchange="swUpdate(${i},'rx',this.value)"></div>
+          <div class="sw-cell"><label>RY (°)</label><input type="number" id="sw-${i}-ry" step="0.01" value="${s.ry}" onchange="swUpdate(${i},'ry',this.value)"></div>
+          <div class="sw-cell"><label>RZ (°)</label><input type="number" id="sw-${i}-rz" step="0.01" value="${s.rz}" onchange="swUpdate(${i},'rz',this.value)"></div>
+          <div class="sw-cell"><label>속도 (%)</label><input type="number" id="sw-${i}-v" step="1" min="1" max="100" value="${s.vel}" onchange="swUpdate(${i},'vel',this.value)"></div>
+        </div>
+        <div class="sw-foot" style="font-size:8px;color:var(--t3)">
+          X/Y/Z: mm · RX/RY/RZ: deg · Gripper 비어있으면 미조작
+        </div>
+      </div>
+    </div>`; }).join('');
+}
+
+function swToggle(i){
+  const body = document.getElementById(`sw-body-${i}`);
+  if(body) body.classList.toggle('open');
+}
+
+function swUpdate(i, field, val){
+  const stages = swLoad();
+  if(field==='gripper') stages[i][field] = val===''?null:parseFloat(val);
+  else stages[i][field] = parseFloat(val)||0;
+  swSave(stages);
+  // 저장됨 배지 업데이트
+  const badge = document.getElementById(`sw-saved-${i}`);
+  if(badge) badge.style.display = swHasPose(stages[i])?'inline':'none';
+}
+
+function swCapture(i){
+  const tcp = (lastState||{}).tcp_pose;
+  if(!tcp||tcp.length<6){ alert('현재 TCP 포즈를 읽을 수 없습니다.'); return; }
+  const stages = swLoad();
+  stages[i].x  = Math.round(tcp[0]*10)/10;
+  stages[i].y  = Math.round(tcp[1]*10)/10;
+  stages[i].z  = Math.round(tcp[2]*10)/10;
+  stages[i].rx = Math.round(tcp[3]*100)/100;
+  stages[i].ry = Math.round(tcp[4]*100)/100;
+  stages[i].rz = Math.round(tcp[5]*100)/100;
+  swSave(stages);
+  swRender();
+  // 편집 패널 열어두기
+  const body = document.getElementById(`sw-body-${i}`);
+  if(body) body.classList.add('open');
+  // 배지 피드백
+  const badge = document.getElementById('sw-badge');
+  if(badge){ badge.textContent=`${stages[i].name} 캡처 완료`; setTimeout(()=>{badge.textContent='대기';},2500); }
+}
+
+async function swExecute(i){
+  const stages = swLoad();
+  const s = stages[i];
+  const cur = (lastState||{}).tcp_pose;
+  const target = [s.x, s.y, s.z, s.rx, s.ry, s.rz];
+  const vel = s.vel||10;
+  const badge = document.getElementById('sw-badge');
+  const btn   = document.getElementById(`sw-run-${i}`);
+  if(btn) btn.disabled=true;
+  try{
+    // move_spline
+    const body = cur&&cur.length===6
+      ? {waypoints:[cur,target], velocity:vel}
+      : {target, velocity:vel};
+    const ep = cur&&cur.length===6?'/spline':'/move';
+    const payload = cur&&cur.length===6 ? body : {command:'tcp',pose:target,velocity:vel};
+    const r = await fetch(TELEOP_API+ep,{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    if(r.ok){
+      if(badge){ badge.textContent=`${s.name} 이동 중`; badge.style.cssText='background:var(--blue-bg);border-color:#bfdbfe;color:var(--blue-tx)'; }
+      // gripper 조작 (있을 경우)
+      if(s.gripper!==null){
+        await new Promise(res=>setTimeout(res,800));
+        await fetch(TELEOP_API+'/gripper',{method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({position:s.gripper, force:30})}).catch(()=>{});
+      }
+      setTimeout(()=>{ if(badge){badge.textContent='대기';badge.style.cssText='';} },3000);
+    }
+  }catch(e){ if(badge){badge.textContent='오류';badge.style.cssText='background:var(--red-bg);color:var(--red-tx)';} }
+  finally{ if(btn) btn.disabled=false; }
+}
+
+async function swSaveToServer(){
+  const stages = swLoad();
+  try{
+    const r = await fetch('/api/sw-stages',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(stages)});
+    const badge = document.getElementById('sw-badge');
+    if(r.ok&&badge){ badge.textContent='서버 저장 완료'; setTimeout(()=>{badge.textContent='대기';},2000); }
+  }catch(e){}
+}
+
+function swReset(){
+  if(!confirm('웨이포인트를 초기화하시겠습니까?')) return;
+  localStorage.removeItem(SW_KEY);
+  swRender();
+}
+
+// 초기 렌더
+swRender();
 
 /* 텔레오프 */
 const TELEOP_LBL={forward:'전진 ↑',backward:'후진 ↓',left:'좌 ←',right:'우 →',
@@ -2387,19 +2566,37 @@ function toggleCamFS(i){
 
 /* ── VLA 추론 제어 ────────────────────────────────────────────────────────── */
 let _vlaLoopTimer = null;
-const VLA_LOOP_INTERVAL_MS = 1000;
+let _vlaChunkStep = 0;          // 현재 chunk에서 몇 번째 action을 소비 중인지
+const VLA_CHUNK_SIZE = 50;      // 서버가 한 번 추론으로 생성하는 action 수
+const VLA_LOOP_INTERVAL_MS = 200;  // 학습 데이터 수집 주파수(5Hz)와 일치
+
+function _showVlaResult(d, badge, txt, result, step){
+  if(d.ok){
+    badge.className = 'rec-status-badge';
+    txt.textContent = `완료 (${step}/${VLA_CHUNK_SIZE})`;
+    const pos = d.action.slice(0, 3).map(x => (x * 1000).toFixed(1));  // m → mm
+    const rot = d.action.slice(3, 6).map(x => (x * 57.2958).toFixed(1));  // rad → °
+    const grip = d.gripper !== undefined ? d.gripper : Math.round(d.action[6] || 0);  // 0~740 raw
+    result.textContent =
+      `Δpos: [${pos[0]}, ${pos[1]}, ${pos[2]}]mm  ` +
+      `Δrot: [${rot[0]}, ${rot[1]}, ${rot[2]}]°  ` +
+      `grip: ${grip}/740`;
+  }else{
+    badge.className = 'rec-status-badge recording';
+    txt.textContent = '오류';
+    result.textContent = d.error || '추론 실패';
+  }
+}
 
 async function runVlaOnce(){
   const btn = document.getElementById('btn-vla-once');
   const badge = document.getElementById('vla-badge');
   const txt = document.getElementById('vla-badge-txt');
   const result = document.getElementById('vla-result');
-
   btn.disabled = true;
   badge.className = 'rec-status-badge starting';
   txt.textContent = '추론 중...';
   result.textContent = '요청 중...';
-
   try{
     const r = await fetch('/api/vla/predict', {
       method: 'POST',
@@ -2409,23 +2606,7 @@ async function runVlaOnce(){
         reset_episode: document.getElementById('vla-reset').checked
       })
     });
-    const d = await r.json();
-    if(d.ok){
-      badge.className = 'rec-status-badge';
-      txt.textContent = '완료';
-      const pos = d.action.slice(0, 3).map(x => (x * 1000).toFixed(1));  // m → mm
-      const rot = d.action.slice(3, 6).map(x => (x * 57.2958).toFixed(1));  // rad → °
-      const grip = (d.action[6] * 100).toFixed(0);
-      result.textContent =
-        `Δpos: [${pos[0]}, ${pos[1]}, ${pos[2]}]mm  ` +
-        `Δrot: [${rot[0]}, ${rot[1]}, ${rot[2]}]°  ` +
-        `grip: ${grip}%`;
-      document.getElementById('vla-reset').checked = false;
-    }else{
-      badge.className = 'rec-status-badge recording';
-      txt.textContent = '오류';
-      result.textContent = d.error || '추론 실패';
-    }
+    _showVlaResult(await r.json(), badge, txt, result, '-');
   }catch(e){
     badge.className = 'rec-status-badge recording';
     txt.textContent = '연결 실패';
@@ -2435,20 +2616,55 @@ async function runVlaOnce(){
   }
 }
 
+async function runVlaLoop(){
+  /* 연속 추론: 50개 chunk를 순서대로 소비.
+     _vlaChunkStep==0 이면 reset_episode=true → 새 chunk 생성(신규 추론).
+     이후 49번은 reset_episode=false → 서버 queue에서 다음 action 소비.
+     50번 소비 완료 후 다시 reset_episode=true → 새 chunk 생성. */
+  const needReset = (_vlaChunkStep === 0);
+  const badge = document.getElementById('vla-badge');
+  const txt = document.getElementById('vla-badge-txt');
+  const result = document.getElementById('vla-result');
+  if(needReset){
+    badge.className = 'rec-status-badge starting';
+    txt.textContent = '추론 중...';
+  }
+  try{
+    const r = await fetch('/api/vla/predict', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        instruction: document.getElementById('vla-instruction').value,
+        reset_episode: needReset
+      })
+    });
+    const d = await r.json();
+    _vlaChunkStep = d.ok ? (_vlaChunkStep + 1) % VLA_CHUNK_SIZE : 0;
+    _showVlaResult(d, badge, txt, result, needReset ? 1 : _vlaChunkStep);
+  }catch(e){
+    badge.className = 'rec-status-badge recording';
+    txt.textContent = '연결 실패';
+    result.textContent = String(e);
+    _vlaChunkStep = 0;  // 오류 시 다음 루프에서 새 chunk 생성
+  }
+}
+
 function toggleVlaLoop(){
   const btn = document.getElementById('btn-vla-loop');
   if(_vlaLoopTimer){
     clearInterval(_vlaLoopTimer);
     _vlaLoopTimer = null;
+    _vlaChunkStep = 0;
     btn.textContent = '⟳ 연속 추론';
     btn.style.cssText = 'background:var(--purple-bg);border-color:#ddd6fe;color:var(--purple-tx)';
     document.getElementById('vla-badge').className = 'rec-status-badge';
     document.getElementById('vla-badge-txt').textContent = '대기';
   }else{
+    _vlaChunkStep = 0;  // 시작 시 항상 새 chunk부터
     btn.textContent = '⏹ 중지';
     btn.style.cssText = 'background:var(--red);color:#fff;border-color:var(--red)';
-    runVlaOnce();
-    _vlaLoopTimer = setInterval(runVlaOnce, VLA_LOOP_INTERVAL_MS);
+    runVlaLoop();
+    _vlaLoopTimer = setInterval(runVlaLoop, VLA_LOOP_INTERVAL_MS);
   }
 }
 </script>
@@ -2519,21 +2735,22 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
         b = await request.json()
         pose = b.get("pose", [0]*6)
 
-        # IK로 검증
+        # IK로 검증 (placo 설치 시에만)
         s = _load()
         current_joints = s.get("joint_angles", [0]*6)
 
-        joint_angles = _tcp_to_joint_angles(pose, current_joints)
-        if joint_angles is None:
-            error_msg = "❌ IK 계산 실패 — TCP 좌표를 관절각도로 변환할 수 없음"
-            _push_msg(s, error_msg, "error")
-            return JSONResponse({"ok": False, "error": error_msg}, status_code=400)
+        if _ik_available:
+            joint_angles = _tcp_to_joint_angles(pose, current_joints)
+            if joint_angles is None:
+                error_msg = "❌ IK 계산 실패 — TCP 좌표를 관절각도로 변환할 수 없음"
+                _push_msg(s, error_msg, "error")
+                return JSONResponse({"ok": False, "error": error_msg}, status_code=400)
 
-        # 계산된 관절각도 검증
-        is_valid, error_msg = _validate_joint_angles(joint_angles)
-        if not is_valid:
-            _push_msg(s, error_msg, "error")
-            return JSONResponse({"ok": False, "error": error_msg}, status_code=400)
+            # 계산된 관절각도 검증
+            is_valid, error_msg = _validate_joint_angles(joint_angles)
+            if not is_valid:
+                _push_msg(s, error_msg, "error")
+                return JSONResponse({"ok": False, "error": error_msg}, status_code=400)
 
         s["pending_tcp_command"] = {"pose": pose,
           "velocity": float(b.get("velocity",10)), "sent_at": datetime.now().isoformat()}
@@ -2554,6 +2771,22 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
         b = await request.json()
         s = _load(); s["target_count"] = max(1, int(b.get("target",15)))
         _save(s); return JSONResponse({"ok": True})
+
+    @app.post("/api/sw-stages")
+    async def sw_stages_save(request: Request):
+        import json as _json
+        stages = await request.json()
+        path = Path(__file__).parent / "sw_stages.json"
+        path.write_text(_json.dumps(stages, indent=2, ensure_ascii=False))
+        return JSONResponse({"ok": True})
+
+    @app.get("/api/sw-stages")
+    async def sw_stages_load():
+        import json as _json
+        path = Path(__file__).parent / "sw_stages.json"
+        if path.exists():
+            return JSONResponse(_json.loads(path.read_text()))
+        return JSONResponse([])
 
     @app.post("/api/set-planned-duration")
     async def set_planned_duration(request: Request):
@@ -2630,7 +2863,7 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
         except ImportError: return JSONResponse({"ok": False, "error": "PIL not installed"}, status_code=400)
 
         req_body = await request.json()
-        instruction = req_body.get("instruction", "Grasp the strawberry stem and pick it.")
+        instruction = req_body.get("instruction", "Find the path to the strawberry stem and grasp it.")
         reset_episode = req_body.get("reset_episode", False)
 
         # 카메라 이미지 취득
@@ -2639,16 +2872,16 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
         if not cam0 or not cam1:
             return JSONResponse({"ok": False, "error": "카메라 이미지 없음"}, status_code=503)
 
-        # 이미지 리사이즈 (224x224)
-        def resize_to_224(jpeg_bytes):
+        # 원본 해상도(640×480) 그대로 base64 전송 — 서버가 letterbox(ImageOps.pad)로 처리.
+        # resize(224,224) 정사각 강제 리사이즈는 학습 시 resize_with_pad와 불일치(발견 #5).
+        def encode_jpeg(jpeg_bytes):
             img = Image.open(BytesIO(jpeg_bytes)).convert('RGB')
-            img = img.resize((224, 224))
             buf = BytesIO()
             img.save(buf, format='JPEG', quality=85)
             return base64.b64encode(buf.getvalue()).decode('utf-8')
 
-        cam0_b64 = resize_to_224(cam0)
-        cam1_b64 = resize_to_224(cam1)
+        cam0_b64 = encode_jpeg(cam0)
+        cam1_b64 = encode_jpeg(cam1)
 
         # 상태 파일에서 현재 TCP pose, gripper 읽기
         s = _load()
@@ -2693,10 +2926,9 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
 
         action = vla_resp.get("action", [0]*32)
 
-        # Action 처리: [0:3] delta_m, [3:6] delta_rad, [6] gripper_ratio, [7:] ignored
+        # Action 처리: [0:3] delta_m, [3:6] delta_rad, [6] gripper 0~740 raw, [7:] ignored
         delta_m = action[:3]
         delta_rad = action[3:6]
-        gripper_ratio = action[6] if len(action) > 6 else 0.0
 
         # 단위 변환 및 안전 클램프
         delta_mm = [d * 1000 for d in delta_m]  # m → mm
@@ -2705,7 +2937,8 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
         delta_deg = [d * 57.2958 for d in delta_rad]  # rad → deg
         delta_deg = [max(-30, min(30, d)) for d in delta_deg]  # ±30deg 클램프
 
-        gripper_raw = max(0, min(740, int(gripper_ratio * 740)))
+        # action[6]: 0~740 raw 단위 (600=살짝열림 기본값, 740=완전닫힘/파지)
+        gripper_raw = max(0, min(740, int(action[6]) if len(action) > 6 else 0))
 
         # 목표 TCP pose 계산
         target_pose = [
@@ -2717,52 +2950,49 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
             tcp_pose[5] + delta_deg[2],
         ]
 
-        # 목표 pose가 도달 가능한지 IK로 검증 (Joint limit 체크)
+        # 목표 pose가 도달 가능한지 IK로 검증 (placo 설치 시에만)
         current_joints = s.get("joint_angles", [0]*6)
-        target_joints = _tcp_to_joint_angles(target_pose, current_joints)
-        if target_joints is None:
-            error_msg = "❌ VLA 목표 pose 도달 불가: IK 계산 실패"
-            _push_msg(s, error_msg, "error")
-            return JSONResponse({
-                "ok": False,
-                "error": error_msg,
-                "action": [float(action[i]) if isinstance(action, (list, np.ndarray)) and i < len(action) else 0.0 for i in range(7)],
-                "target_pose": target_pose,
-                "gripper": gripper_raw,
-                "robot_ok": False
-            })
+        if _ik_available:
+            target_joints = _tcp_to_joint_angles(target_pose, current_joints)
+            if target_joints is None:
+                error_msg = "❌ VLA 목표 pose 도달 불가: IK 계산 실패"
+                _push_msg(s, error_msg, "error")
+                return JSONResponse({
+                    "ok": False,
+                    "error": error_msg,
+                    "action": [float(action[i]) if isinstance(action, (list, np.ndarray)) and i < len(action) else 0.0 for i in range(7)],
+                    "target_pose": target_pose,
+                    "gripper": gripper_raw,
+                    "robot_ok": False
+                })
 
-        is_valid, error_msg = _validate_joint_angles(target_joints)
-        if not is_valid:
-            error_msg = f"❌ VLA 목표 pose 도달 불가: {error_msg}"
-            _push_msg(s, error_msg, "error")
-            return JSONResponse({
-                "ok": False,
-                "error": error_msg,
-                "action": [float(action[i]) if isinstance(action, (list, np.ndarray)) and i < len(action) else 0.0 for i in range(7)],
-                "target_pose": target_pose,
-                "gripper": gripper_raw,
-                "robot_ok": False
-            })
+            is_valid, error_msg = _validate_joint_angles(target_joints)
+            if not is_valid:
+                error_msg = f"❌ VLA 목표 pose 도달 불가: {error_msg}"
+                _push_msg(s, error_msg, "error")
+                return JSONResponse({
+                    "ok": False,
+                    "error": error_msg,
+                    "action": [float(action[i]) if isinstance(action, (list, np.ndarray)) and i < len(action) else 0.0 for i in range(7)],
+                    "target_pose": target_pose,
+                    "gripper": gripper_raw,
+                    "robot_ok": False
+                })
 
-        # Teleop API로 로봇 동작 실행 (delta 명령으로 전송)
+        # Teleop API로 로봇 동작 실행 (모든 축을 한 번에 전송)
         robot_ok = False
         try:
-            # Delta 이동: 각 축별로 순차적으로 이동 (상대 이동)
-            axes = [
-                ('dx', delta_mm[0]),
-                ('dy', delta_mm[1]),
-                ('dz', delta_mm[2]),
-                ('drx', delta_deg[0]),
-                ('dry', delta_deg[1]),
-                ('drz', delta_deg[2]),
-            ]
+            # 모든 유효한 delta를 하나의 요청으로 전송 — 순차 전송 시 _is_moving 플래그로 2번째부터 무시됨
+            teleop_move_req = {}
+            for axis_name, axis_val in [
+                ('dx', delta_mm[0]), ('dy', delta_mm[1]), ('dz', delta_mm[2]),
+                ('drx', delta_deg[0]), ('dry', delta_deg[1]), ('drz', delta_deg[2]),
+            ]:
+                if abs(axis_val) >= 0.1:
+                    teleop_move_req[axis_name] = axis_val
 
-            move_ok = True
-            for axis_name, axis_val in axes:
-                if abs(axis_val) < 0.1:  # 거의 움직이지 않으면 스킵
-                    continue
-                teleop_move_req = {axis_name: axis_val}
+            move_ok = False
+            if teleop_move_req:
                 teleop_url = f'http://localhost:8767/move'
                 teleop_req = urllib.request.Request(teleop_url,
                     data=json.dumps(teleop_move_req).encode('utf-8'),
@@ -2770,12 +3000,11 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
                 try:
                     with urllib.request.urlopen(teleop_req, timeout=5) as resp:
                         move_resp = json.loads(resp.read())
-                        if not move_resp.get("ok"):
-                            move_ok = False
-                            break
-                except:
-                    move_ok = False
-                    break
+                        move_ok = bool(move_resp.get("ok"))
+                except Exception as e:
+                    print(f'[VLA] move 요청 실패: {e}')
+            else:
+                move_ok = True  # 이동량이 없는 경우는 성공으로 처리
 
             if move_ok:
                 # 그리퍼 제어

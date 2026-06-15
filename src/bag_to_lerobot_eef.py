@@ -235,6 +235,77 @@ def _nearest(sorted_ts: np.ndarray, query: np.ndarray) -> np.ndarray:
     return idx
 
 
+def _interp_columns(ts: np.ndarray, values: np.ndarray, query: np.ndarray) -> np.ndarray:
+    """
+    (N, D) 시계열을 query 시점에서 채널별 선형 보간.
+    query가 ts 범위 밖이면 양끝값으로 클램프 (np.interp 기본 동작).
+    ts/query는 같은 원점의 상대 시간(float)이어야 함 — int64 ns 절대값은
+    float64 변환 시 정밀도가 깎이므로 호출부에서 t_start를 빼서 전달한다.
+    """
+    out = np.empty((len(query), values.shape[1]), dtype=np.float64)
+    for c in range(values.shape[1]):
+        out[:, c] = np.interp(query, ts, values[:, c])
+    return out
+
+
+def _interp_eef_poses(ts: np.ndarray, poses: np.ndarray, query: np.ndarray) -> np.ndarray:
+    """
+    EEF pose [x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg]를 query 시점에서 보간.
+    회전은 ±180° 경계에서 선형 보간이 깨지므로 unwrap으로 펼친 뒤 보간하고
+    다시 ±180° 범위로 감는다.
+    """
+    poses = poses.astype(np.float64).copy()
+    poses[:, 3:6] = np.unwrap(poses[:, 3:6], axis=0, period=360.0)
+    out = _interp_columns(ts, poses, query)
+    out[:, 3:6] = (out[:, 3:6] + 180.0) % 360.0 - 180.0
+    return out
+
+
+def _respace_duplicate_ts(ts: np.ndarray) -> np.ndarray:
+    """
+    rosbag 기록 지연 시 버퍼에 쌓인 메시지 여러 개가 거의 같은 수신
+    타임스탬프(수십 µs 간격)로 한꺼번에 기록된다 (burst flush). 값은
+    제각각인데 시간이 뭉쳐 있으면 보간이 그 구간을 복원하지 못하므로,
+    버스트 묶음을 직전 갭 안에 발행 주기(중앙값) 간격으로 되감아 재배치한다.
+    버스트 판정: 인접 간격 < 발행 주기의 1/4.
+    입력: 상대 시간 float 배열 (단조 비감소). 출력: 단조 증가 배열.
+    """
+    ts = ts.astype(np.float64).copy()
+    diffs = np.diff(ts)
+    if len(diffs) == 0:
+        return ts
+    period = float(np.median(diffs))
+    if period <= 0:
+        return ts
+    thresh = period * 0.25
+    i, n = 0, len(ts)
+    while i < n:
+        j = i
+        while j + 1 < n and ts[j + 1] - ts[j] < thresh:
+            j += 1
+        count = j - i + 1
+        if count > 1:
+            t_end  = ts[j]
+            t_prev = ts[i - 1] if i > 0 else t_end - period * count
+            if t_end > t_prev:
+                step = min(period, (t_end - t_prev) / count)
+                for k in range(count):
+                    ts[j - k] = t_end - step * k
+        i = j + 1
+    return ts
+
+
+def _report_gaps(name: str, sorted_ts: np.ndarray, step_ns: int):
+    """그리드 간격을 초과하는 토픽 끊김을 로그로 남긴다 (보간 품질 점검용)."""
+    if len(sorted_ts) < 2:
+        return
+    gaps = np.diff(sorted_ts)
+    long_gaps = gaps[gaps > step_ns]
+    if len(long_gaps) > 0:
+        print(f'    [GAP] {name}: 그리드 간격({step_ns / 1e6:.0f}ms) 초과 끊김 '
+              f'{len(long_gaps)}회, 최대 {long_gaps.max() / 1e6:.0f}ms — 선형 보간으로 복원됨')
+
+
 def _eef_delta_m_rad(eef_now: list, eef_next: list) -> list:
     """
     EEF delta를 m/rad 단위로 반환.
@@ -288,25 +359,35 @@ def synchronize(bag_data: dict, fps: int = 10) -> dict | None:
         return None
 
     cam_idx = _nearest(cam_ts, grid)
-    tcp_idx = _nearest(tcp_ts, grid)
-    jnt_idx = _nearest(jnt_ts, grid) if jnt_ts is not None and len(jnt_ts) > 0 else None
 
-    # EEF pose 파싱
-    eef_poses = [parse_tcp_pose(bag_data[TCP][i][1]) for i in tcp_idx]
+    # 보간용 상대 시간축 (int64 ns → float64 변환 정밀도 손실 방지)
+    grid_f = (grid - t_start).astype(np.float64)
 
-    # Joint States 파싱
-    if jnt_idx is not None:
-        joint_angles = [parse_joint_states(bag_data[JNT][i][1]) for i in jnt_idx]
+    # EEF pose: 전체 샘플 파싱 후 그리드 시점에서 선형 보간.
+    # nearest 선택은 토픽 끊김/지터 시 같은 샘플이 중복 선택되어
+    # delta 0 + 스파이크 아티팩트를 만든다 (VLA_DAILY_ISSUES.md 발견 #8).
+    _report_gaps('tcp_pose', tcp_ts, step_ns)
+    tcp_tf    = _respace_duplicate_ts((tcp_ts - t_start).astype(np.float64))
+    tcp_all   = np.array([parse_tcp_pose(m) for _, m in bag_data[TCP]], dtype=np.float64)
+    eef_poses = _interp_eef_poses(tcp_tf, tcp_all, grid_f).tolist()
+
+    # Joint States: 동일하게 보간 (연속 각도값이라 unwrap 불필요)
+    if jnt_ts is not None and len(jnt_ts) > 0:
+        _report_gaps('joint_states', jnt_ts, step_ns)
+        jnt_tf       = _respace_duplicate_ts((jnt_ts - t_start).astype(np.float64))
+        jnt_all      = np.array([parse_joint_states(m) for _, m in bag_data[JNT]], dtype=np.float64)
+        joint_angles = _interp_columns(jnt_tf, jnt_all, grid_f).tolist()
     else:
         print(f'    [WARNING] {JNT} 없음 — joint states=0.0 채움.')
         joint_angles = [[0.0] * 6 for _ in range(len(grid))]
 
-    # 그리퍼
+    # 그리퍼: 스칼라 위치값 선형 보간
     grp_msgs = bag_data.get(GRP, [])
     if grp_msgs:
         grp_ts  = np.array([t for t, _ in grp_msgs], dtype=np.int64)
-        grp_idx = _nearest(grp_ts, grid)
-        grips   = [parse_float32_msg(grp_msgs[i][1]) for i in grp_idx]
+        grp_tf  = _respace_duplicate_ts((grp_ts - t_start).astype(np.float64))
+        grp_all = np.array([parse_float32_msg(m) for _, m in grp_msgs], dtype=np.float64)
+        grips   = np.interp(grid_f, grp_tf, grp_all).tolist()
 
         # 그리퍼 값 범위 확인
         print(f'    [DEBUG] Gripper raw values (첫 10개): {grips[:10]}')
@@ -668,6 +749,8 @@ def build_dataset(
         'total_episodes':   ep_count,
         'total_frames':     total_frames,
         'total_tasks':      len(task_registry),
+        # 정보용 커스텀 키 — 공식 출처는 tasks.parquet (LeRobot은 모르는 키 무시)
+        'tasks':            sorted(task_registry, key=task_registry.get),
         'chunks_size':      1000,
         'data_files_size_in_mb':  round(parquet_path.stat().st_size / 1024 / 1024, 3),
         'video_files_size_in_mb': round(sum(

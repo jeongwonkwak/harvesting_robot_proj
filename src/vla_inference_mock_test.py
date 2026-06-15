@@ -32,9 +32,7 @@ st.set_page_config(
 
 # 사용 가능한 데이터셋 경로 (우선순위 순)
 _CANDIDATE_PATHS = [
-    Path("/home/user/robot_workspace/vla_ws/data/mid/vla_dataset_v1.0.0"),
-    Path("/home/user/robot_workspace/vla_ws/data/mid/vla_dataset_v0.5.0"),
-    Path("/home/user/robot_workspace/vla_ws/data/fin/vla_dataset_v0.5.0"),
+    Path("/home/user/robot_workspace/vla_ws/data/fin/vla_dataset_v0.5.2"),
 ]
 
 # 실제 존재하는 경로 선택
@@ -53,6 +51,7 @@ CAM1_DIR = VIDEOS_DIR / "observation.images.camera1/chunk-000"
 CAM2_DIR = VIDEOS_DIR / "observation.images.camera2/chunk-000"
 
 VLA_API_URL = "http://192.168.50.79:18003"
+CHUNK_SIZE = 50   # pi05 action chunk 길이 (서버 큐를 비우며 전체 수집할 때 사용)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 데이터 로드 (캐시)
@@ -231,6 +230,31 @@ def calculate_state_vector(tcp_pose: list, gripper_pos: float = 100.0) -> list:
         gripper_pos / 100.0,        # position % → ratio [0, 1]
     ] + [0.0] * 25
     return state
+
+
+def dim_names(kind: str) -> list:
+    """32-dim 벡터의 차원 이름. kind: 'action' 또는 'state'"""
+    if kind == "action":
+        names = ["dx_m", "dy_m", "dz_m", "drx_rad", "dry_rad", "drz_rad", "grip_next"]
+    else:
+        names = ["x_m", "y_m", "z_m", "rx_rad", "ry_rad", "rz_rad", "gripper"]
+    return names + [f"pad_{i}" for i in range(25)]
+
+
+def dim_converted(values) -> list:
+    """raw 값(m/rad/ratio)을 읽기 쉬운 단위(mm / ° / ×740 raw)로 환산한 문자열 목록."""
+    out = []
+    for i, v in enumerate(values):
+        v = float(v)
+        if i < 3:
+            out.append(f"{v * 1000:.2f} mm")
+        elif i < 6:
+            out.append(f"{v * 57.2958:.3f} °")
+        elif i == 6:
+            out.append(f"{v * 740:.0f} /740")
+        else:
+            out.append("-")
+    return out
 
 
 def calculate_target_pose(
@@ -487,7 +511,7 @@ col_inst, col_btn = st.columns([3, 1])
 with col_inst:
     instruction = st.text_input(
         "작업 지시문",
-        value="Grasp the strawberry stem and pick it.",
+        value="Approach to the strawberry stem.",
         help="VLA에 전달할 작업 지시"
     )
 with col_btn:
@@ -495,10 +519,46 @@ with col_btn:
     run_inference = st.button("실행", key="run_inference_btn", use_container_width=True, type="primary")
 
 reset_episode = st.checkbox(
-    "reset_episode (매 추론마다 큐 초기화 — 테스트 시 항상 켜야 함)",
+    "reset_episode (매 추론마다 큐 초기화)",
     value=True,
-    help="pi05는 chunk_size=50 액션 큐를 씁니다. False면 이전 추론 결과를 그대로 반환해 프레임을 바꿔도 같은 값이 나옵니다."
+    help="pi05는 chunk_size=50 액션 큐를 씁니다. 켜면 매번 새로 추론(프레임별 테스트용), "
+         "끄면 서버가 큐에서 순차적으로 꺼내줍니다 — 끈 상태로 연속 실행하면 아래 "
+         "'추론 호출 히스토리'에서 청크 소비 과정과 레이턴시 변화(큐에서 꺼낼 땐 급감)를 관찰할 수 있습니다."
 )
+
+extract_chunk = st.button(
+    f"청크 전체 추출 — 현재 프레임에서 새 청크 생성 후 {CHUNK_SIZE}개 모두 수신",
+    key="extract_chunk_btn", use_container_width=True,
+    help="첫 호출만 reset_episode=True로 새 청크를 만들고, 이후 reset_episode=False로 "
+         f"{CHUNK_SIZE - 1}번 더 호출해 서버 큐를 끝까지 비우며 전체 액션을 수집합니다. "
+         "reset_episode 체크박스와 무관하게 동작합니다."
+)
+
+if extract_chunk:
+    state_vec = np.array(list(state_arr) + [0.0] * 25)
+    _chunk_results = []
+    _prog = st.progress(0.0, text="청크 추출 중...")
+    try:
+        for i in range(CHUNK_SIZE):
+            res = call_vla_api(state_vec, cam1, cam2, instruction, reset_episode=(i == 0))
+            # 서버가 청크 전체를 한 번에 주는 경우(action_chunk 필드) 추가 호출 불필요
+            if i == 0 and isinstance(res.get("action_chunk"), list) and len(res["action_chunk"]) > 1:
+                _chunk_results = [
+                    {"action": a, "latency_ms": res["latency_ms"] if j == 0 else 0.0}
+                    for j, a in enumerate(res["action_chunk"])
+                ]
+                break
+            _chunk_results.append(res)
+            _prog.progress((i + 1) / CHUNK_SIZE, text=f"청크 추출 중... {i + 1}/{CHUNK_SIZE}")
+    except Exception as e:
+        st.warning(f"{len(_chunk_results)}개 수신 후 중단: {e}")
+    _prog.empty()
+    if _chunk_results:
+        st.session_state.last_chunk = {
+            "episode": selected_episode,
+            "frame": selected_frame,
+            "results": _chunk_results,
+        }
 
 if run_inference:
     state_vec = np.array(list(state_arr) + [0.0] * 25)
@@ -514,6 +574,15 @@ if run_inference:
         st.session_state.last_inference = vla_result
         st.session_state.last_state = state_vec
         st.session_state.last_frame = selected_frame
+        # 호출 히스토리 누적 (reset_episode=False일 때 큐 소비 과정 관찰용)
+        _hist = st.session_state.setdefault("inference_history", [])
+        _hist.append({
+            "call": len(_hist) + 1,
+            "frame": selected_frame,
+            "reset": bool(reset_episode),
+            "latency_ms": float(vla_result.get("latency_ms", 0.0)),
+            "action": [float(v) for v in vla_result["action"][:7]],
+        })
 
 st.divider()
 
@@ -584,19 +653,415 @@ if "last_inference" in st.session_state:
 
     with st.expander("모든 데이터 보기"):
         st.write(f"**Full Action Vector — 역정규화 ({len(action)}-dim)**")
-        st.dataframe({"Index": list(range(len(action))), "Value": [f"{v:.6f}" for v in action]},
-                     use_container_width=True)
+        st.dataframe({
+            "Index": list(range(len(action))),
+            "이름": dim_names("action")[:len(action)],
+            "Value (raw)": [f"{float(v):.6f}" for v in action],
+            "환산": dim_converted(action),
+        }, use_container_width=True)
         if raw_action is not None:
             st.write(f"**Full Raw Action Vector — 정규화 공간 ({len(raw_action)}-dim)**")
-            st.dataframe({"Index": list(range(len(raw_action))), "Value": [f"{float(v):.6f}" for v in raw_action]},
-                         use_container_width=True)
+            st.dataframe({
+                "Index": list(range(len(raw_action))),
+                "이름": dim_names("action")[:len(raw_action)],
+                "Value": [f"{float(v):.6f}" for v in raw_action],
+            }, use_container_width=True)
         st.write("**Input State Vector (raw)**")
         sv = st.session_state.last_state
-        st.dataframe({"Index": list(range(len(sv))), "Value": [f"{v:.6f}" for v in sv]},
-                     use_container_width=True)
+        st.dataframe({
+            "Index": list(range(len(sv))),
+            "이름": dim_names("state")[:len(sv)],
+            "Value (raw)": [f"{float(v):.6f}" for v in sv],
+            "환산": dim_converted(sv),
+        }, use_container_width=True)
 
 else:
     st.info("추론을 실행하면 결과가 여기에 표시됩니다")
+
+# ── 액션 청크 전체 보기 ───────────────────────────────────────────────────────
+if "last_chunk" in st.session_state:
+    ck = st.session_state.last_chunk
+    ck_res = ck["results"]
+    st.divider()
+    st.header(f"액션 청크 전체 — {len(ck_res)}개 (Episode {ck['episode']}, frame {ck['frame']}에서 시작)")
+
+    # 큐 동작 진단: 첫 호출(실추론) vs 이후(큐 pop) 레이턴시
+    _lat = [float(r.get("latency_ms", 0.0)) for r in ck_res]
+    if len(_lat) > 1:
+        _lat_rest = float(np.mean(_lat[1:]))
+        _diag = ("큐 정상 동작 (이후 호출이 큐에서 pop)" if _lat_rest < _lat[0] * 0.3
+                 else "주의: 이후 호출도 첫 호출과 레이턴시가 비슷함 — 서버가 매번 재추론 중일 가능성")
+        st.caption(f"레이턴시 — 첫 호출(실추론): {_lat[0]:.0f} ms / 이후 평균: {_lat_rest:.0f} ms → {_diag}")
+
+    # GT: 청크 시작 프레임부터 같은 길이만큼 (에피소드 끝에서 잘림)
+    _gt_df = load_episode_df(ck["episode"])
+    _gt_rows = _gt_df[_gt_df["frame_index"] >= ck["frame"]].sort_values("frame_index").head(len(ck_res))
+    _gt_mat = np.stack(_gt_rows["action"].values) if len(_gt_rows) else None
+
+    _ck_mat = np.array([[float(v) for v in r["action"][:7]] for r in ck_res])
+    _steps = list(range(len(ck_res)))
+
+    try:
+        from plotly.subplots import make_subplots
+        import plotly.graph_objects as go
+
+        fig_c = make_subplots(
+            rows=2, cols=1, shared_xaxes=True,
+            subplot_titles=("위치 델타 (mm) — 실선: 모델 청크 / 점선: GT(데이터셋)",
+                            "그리퍼 (/740)"),
+            vertical_spacing=0.15,
+        )
+        _mk_c = dict(size=4, opacity=0.7)
+        for dim, color, label in [(0, "#EF4444", "ΔX"), (1, "#22C55E", "ΔY"), (2, "#3B82F6", "ΔZ")]:
+            fig_c.add_trace(go.Scatter(
+                x=_steps, y=_ck_mat[:, dim] * 1000,
+                name=f"{label} 모델", mode="lines+markers", marker=_mk_c,
+                line=dict(color=color, width=1.5)), row=1, col=1)
+            if _gt_mat is not None:
+                fig_c.add_trace(go.Scatter(
+                    x=_steps[:len(_gt_mat)], y=_gt_mat[:, dim] * 1000,
+                    name=f"{label} GT", mode="lines",
+                    line=dict(color=color, width=1, dash="dash"), opacity=0.5), row=1, col=1)
+        fig_c.add_trace(go.Scatter(
+            x=_steps, y=_ck_mat[:, 6] * 740,
+            name="Grip 모델", mode="lines+markers", marker=_mk_c,
+            line=dict(color="#F59E0B", width=1.5)), row=2, col=1)
+        if _gt_mat is not None:
+            fig_c.add_trace(go.Scatter(
+                x=_steps[:len(_gt_mat)], y=_gt_mat[:, 6] * 740,
+                name="Grip GT", mode="lines",
+                line=dict(color="#F59E0B", width=1, dash="dash"), opacity=0.5), row=2, col=1)
+
+        fig_c.update_layout(height=480, margin=dict(t=50, b=30, l=60, r=20),
+                            template="plotly_dark",
+                            legend=dict(orientation="h", y=1.1))
+        fig_c.update_xaxes(title_text="청크 내 스텝 # (= 시작 프레임으로부터의 미래 스텝)", row=2, col=1)
+        fig_c.update_yaxes(title_text="mm", row=1, col=1)
+        fig_c.update_yaxes(title_text="/ 740", row=2, col=1)
+        st.plotly_chart(fig_c, use_container_width=True)
+    except ImportError:
+        st.warning("plotly 미설치 — 차트 생략")
+
+    with st.expander(f"청크 {len(ck_res)}개 전체 테이블", expanded=False):
+        import pandas as pd
+        _ck_rows = []
+        for i, r in enumerate(ck_res):
+            a = [float(v) for v in r["action"][:7]]
+            row_d = {
+                "step": i,
+                "latency(ms)": round(float(r.get("latency_ms", 0.0)), 1),
+                "ΔX(mm)": round(a[0] * 1000, 2),
+                "ΔY(mm)": round(a[1] * 1000, 2),
+                "ΔZ(mm)": round(a[2] * 1000, 2),
+                "ΔRx(°)": round(a[3] * 57.2958, 3),
+                "ΔRy(°)": round(a[4] * 57.2958, 3),
+                "ΔRz(°)": round(a[5] * 57.2958, 3),
+                "Grip": round(a[6], 3),
+            }
+            if _gt_mat is not None and i < len(_gt_mat):
+                row_d["GT ΔX(mm)"] = round(float(_gt_mat[i, 0]) * 1000, 2)
+                row_d["GT ΔY(mm)"] = round(float(_gt_mat[i, 1]) * 1000, 2)
+                row_d["GT ΔZ(mm)"] = round(float(_gt_mat[i, 2]) * 1000, 2)
+            _ck_rows.append(row_d)
+        st.dataframe(pd.DataFrame(_ck_rows), use_container_width=True, hide_index=True)
+
+    if st.button("청크 결과 지우기", key="clear_chunk_btn"):
+        del st.session_state["last_chunk"]
+        st.rerun()
+
+# ── 모델 진단 ─────────────────────────────────────────────────────────────────
+st.divider()
+st.header("모델 진단")
+st.caption("청크(오픈루프)와 별개로, 모델이 관측에 따라 출력을 제대로 조절하는지 검사합니다.")
+
+diag_c1, diag_c2 = st.columns(2)
+with diag_c1:
+    n_probe = st.number_input("샘플 프레임 수", min_value=3, max_value=30, value=8, step=1,
+                              key="diag_n_probe")
+    run_framewise = st.button(
+        "프레임별 GT 추적 진단", key="run_framewise_btn", use_container_width=True,
+        help="에피소드 전체에서 균등 간격으로 프레임을 골라 각각 새 추론(reset=True)을 하고 "
+             "첫 액션을 그 프레임의 GT와 비교합니다. 상관이 0 근처면 모델이 가속/감속 위상을 "
+             "관측에서 읽지 못하는 것입니다 (목표 지점 오버슈트 위험).",
+    )
+with diag_c2:
+    n_repeat = st.number_input("반복 횟수", min_value=2, max_value=20, value=5, step=1,
+                               key="diag_n_repeat")
+    run_repeat = st.button(
+        "현재 프레임 반복 분산 진단", key="run_repeat_btn", use_container_width=True,
+        help="같은 입력으로 새 추론(reset=True)을 반복해 출력 분산을 측정합니다. "
+             "표준편차가 출력 크기 대비 크면(예: 30% 이상) 수렴 부족 신호입니다.",
+    )
+
+diag_c3, diag_c4 = st.columns(2)
+with diag_c3:
+    ablation_frame_b = st.number_input(
+        "교차 비교 프레임 B", min_value=0, max_value=total_frames - 1,
+        value=max(0, total_frames - 5), step=1, key="diag_ablation_b",
+        help="현재 프레임(A)과 교차 조합할 프레임. 기본값은 에피소드 종반.")
+with diag_c4:
+    st.write("")
+    run_ablation = st.button(
+        "입력 의존성 진단 (이미지/state 교차)", key="run_ablation_btn", use_container_width=True,
+        help="A·B 프레임의 이미지와 state를 교차 조합해 4가지로 추론합니다(각 2회 평균). "
+             "출력이 state 교체에만 반응하고 이미지 교체에 무반응이면 모델이 이미지를 무시하는 "
+             "지름길(state-only) 학습 상태입니다.")
+
+if run_ablation:
+    _fb = int(ablation_frame_b)
+    _f1b = extract_frame(CAM1_DIR / f"file-{selected_episode:03d}.mp4", _fb)
+    _f2b = extract_frame(CAM2_DIR / f"file-{selected_episode:03d}.mp4", _fb)
+    _row_b = ep_df[ep_df["frame_index"] == _fb].iloc[0]
+    _sv_a = np.array(list(state_arr) + [0.0] * 25)
+    _sv_b = np.array(list(_row_b["observation.state"]) + [0.0] * 25)
+    _combos = [("이미지A + stateA", cam1, cam2, _sv_a), ("이미지B + stateA", _f1b, _f2b, _sv_a),
+               ("이미지A + stateB", cam1, cam2, _sv_b), ("이미지B + stateB", _f1b, _f2b, _sv_b)]
+    _ab_out = {}
+    _prog = st.progress(0.0, text="입력 의존성 진단 중...")
+    try:
+        for _k, (_nm, _i1, _i2, _sv) in enumerate(_combos):
+            _accs = []
+            for _ in range(2):
+                _res = call_vla_api(_sv, _i1, _i2, instruction, reset_episode=True)
+                _accs.append([float(v) for v in _res["action"][:3]])
+            _ab_out[_nm] = np.mean(_accs, axis=0).tolist()
+            _prog.progress((_k + 1) / len(_combos), text=f"입력 의존성 진단 중... {_k + 1}/4")
+    except Exception as e:
+        st.warning(f"중단: {e}")
+    _prog.empty()
+    if len(_ab_out) == 4:
+        st.session_state.ablation_probe = {
+            "episode": selected_episode, "fa": selected_frame, "fb": _fb, "out": _ab_out,
+            "gt_a": [float(v) for v in gt_action[:3]],
+            "gt_b": [float(v) for v in _row_b["action"][:3]],
+        }
+
+if run_framewise:
+    _idxs = sorted(set(np.linspace(0, total_frames - 1, int(n_probe)).round().astype(int).tolist()))
+    _fw_rows = []
+    _prog = st.progress(0.0, text="프레임별 추적 진단 중...")
+    try:
+        for _k, _fidx in enumerate(_idxs):
+            _f1 = extract_frame(CAM1_DIR / f"file-{selected_episode:03d}.mp4", int(_fidx))
+            _f2 = extract_frame(CAM2_DIR / f"file-{selected_episode:03d}.mp4", int(_fidx))
+            _row = ep_df[ep_df["frame_index"] == _fidx].iloc[0]
+            _sv = np.array(list(_row["observation.state"]) + [0.0] * 25)
+            _res = call_vla_api(_sv, _f1, _f2, instruction, reset_episode=True)
+            _fw_rows.append({"frame": int(_fidx),
+                             "model": [float(v) for v in _res["action"][:3]],
+                             "gt": [float(v) for v in _row["action"][:3]]})
+            _prog.progress((_k + 1) / len(_idxs), text=f"프레임별 추적 진단 중... {_k + 1}/{len(_idxs)}")
+    except Exception as e:
+        st.warning(f"{len(_fw_rows)}개 수행 후 중단: {e}")
+    _prog.empty()
+    if _fw_rows:
+        st.session_state.framewise_probe = {"episode": selected_episode, "rows": _fw_rows}
+
+if run_repeat:
+    _sv = np.array(list(state_arr) + [0.0] * 25)
+    _rp_outs = []
+    _prog = st.progress(0.0, text="반복 분산 진단 중...")
+    try:
+        for _i in range(int(n_repeat)):
+            _res = call_vla_api(_sv, cam1, cam2, instruction, reset_episode=True)
+            _raw = _res.get("raw_action") or [float("nan")] * 7
+            _rp_outs.append({"action": [float(v) for v in _res["action"][:7]],
+                             "raw": [float(v) for v in _raw[:7]]})
+            _prog.progress((_i + 1) / int(n_repeat), text=f"반복 분산 진단 중... {_i + 1}/{n_repeat}")
+    except Exception as e:
+        st.warning(f"{len(_rp_outs)}회 수행 후 중단: {e}")
+    _prog.empty()
+    if _rp_outs:
+        st.session_state.repeat_probe = {"episode": selected_episode, "frame": selected_frame,
+                                         "outs": _rp_outs,
+                                         "gt": [float(v) for v in gt_action[:7]]}
+
+if "framewise_probe" in st.session_state:
+    fw = st.session_state.framewise_probe
+    with st.expander(f"프레임별 GT 추적 결과 — Episode {fw['episode']}, {len(fw['rows'])}개 프레임",
+                     expanded=True):
+        _m = np.array([r["model"] for r in fw["rows"]])
+        _g = np.array([r["gt"] for r in fw["rows"]])
+        _fx = [r["frame"] for r in fw["rows"]]
+
+        mc1, mc2, mc3 = st.columns(3)
+        _dim_info = [("ΔX", "#EF4444"), ("ΔY", "#22C55E"), ("ΔZ", "#3B82F6")]
+        _corrs = []
+        for _d, (_col_ui, (_nm, _)) in enumerate(zip([mc1, mc2, mc3], _dim_info)):
+            _corr = (float(np.corrcoef(_m[:, _d], _g[:, _d])[0, 1])
+                     if _g[:, _d].std() > 1e-12 and _m[:, _d].std() > 1e-12 else float("nan"))
+            _amp = float(np.abs(_m[:, _d]).mean() / max(np.abs(_g[:, _d]).mean(), 1e-12))
+            _corrs.append(_corr)
+            _col_ui.metric(f"{_nm} 상관", f"{_corr:+.2f}", delta=f"진폭비 {_amp:.2f}")
+        _c_mean = np.nanmean(_corrs)
+        if _c_mean > 0.7:
+            st.caption("판정: 위상 추적 양호 — 모델이 관측에 따라 속도를 조절하고 있습니다.")
+        elif _c_mean > 0.3:
+            st.caption("판정: 부분 추적 — 방향은 따라가나 가속/감속 타이밍이 어긋납니다.")
+        else:
+            st.caption("판정: 위상 추적 실패 — 출력이 GT 프로파일과 무관합니다. "
+                       "관측→속도 매핑을 못 배운 상태로, 폐루프 시 목표 오버슈트 위험이 큽니다.")
+
+        try:
+            import plotly.graph_objects as go
+            fig_fw = go.Figure()
+            for _d, (_nm, _color) in enumerate(_dim_info):
+                fig_fw.add_trace(go.Scatter(x=_fx, y=_m[:, _d] * 1000, name=f"{_nm} 모델",
+                                            mode="lines+markers",
+                                            line=dict(color=_color, width=2)))
+                fig_fw.add_trace(go.Scatter(x=_fx, y=_g[:, _d] * 1000, name=f"{_nm} GT",
+                                            mode="lines", opacity=0.5,
+                                            line=dict(color=_color, width=1, dash="dash")))
+            fig_fw.update_layout(height=340, template="plotly_dark",
+                                 margin=dict(t=30, b=30, l=60, r=20),
+                                 legend=dict(orientation="h", y=1.12),
+                                 xaxis_title="Frame", yaxis_title="mm")
+            st.plotly_chart(fig_fw, use_container_width=True)
+        except ImportError:
+            pass
+        if st.button("추적 결과 지우기", key="clear_framewise_btn"):
+            del st.session_state["framewise_probe"]
+            st.rerun()
+
+if "repeat_probe" in st.session_state:
+    rp = st.session_state.repeat_probe
+    with st.expander(f"반복 분산 결과 — Episode {rp['episode']}, frame {rp['frame']}, "
+                     f"{len(rp['outs'])}회", expanded=True):
+        import pandas as pd
+        _acts = np.array([o["action"][:3] for o in rp["outs"]])
+        _rows_rp = [{"회차": _i + 1,
+                     "ΔX(mm)": round(o["action"][0] * 1000, 2),
+                     "ΔY(mm)": round(o["action"][1] * 1000, 2),
+                     "ΔZ(mm)": round(o["action"][2] * 1000, 2),
+                     "raw ΔX": round(o["raw"][0], 3),
+                     "raw ΔY": round(o["raw"][1], 3),
+                     "raw ΔZ": round(o["raw"][2], 3)}
+                    for _i, o in enumerate(rp["outs"])]
+        _rows_rp.append({"회차": "평균±표준편차",
+                         "ΔX(mm)": f"{_acts[:,0].mean()*1000:+.2f}±{_acts[:,0].std()*1000:.2f}",
+                         "ΔY(mm)": f"{_acts[:,1].mean()*1000:+.2f}±{_acts[:,1].std()*1000:.2f}",
+                         "ΔZ(mm)": f"{_acts[:,2].mean()*1000:+.2f}±{_acts[:,2].std()*1000:.2f}",
+                         "raw ΔX": "", "raw ΔY": "", "raw ΔZ": ""})
+        _rows_rp.append({"회차": "GT",
+                         "ΔX(mm)": round(float(rp["gt"][0]) * 1000, 2),
+                         "ΔY(mm)": round(float(rp["gt"][1]) * 1000, 2),
+                         "ΔZ(mm)": round(float(rp["gt"][2]) * 1000, 2),
+                         "raw ΔX": "", "raw ΔY": "", "raw ΔZ": ""})
+        st.dataframe(pd.DataFrame(_rows_rp), use_container_width=True, hide_index=True)
+        _cv = (_acts.std(0) / np.maximum(np.abs(_acts.mean(0)), 1e-12)).max()
+        st.caption(f"최대 변동계수(표준편차/|평균|): {_cv:.2f} — "
+                   + ("0.3 이하: 안정적" if _cv <= 0.3 else "0.3 초과: 출력 분산 큼 (수렴 부족 신호)"))
+        if st.button("분산 결과 지우기", key="clear_repeat_btn"):
+            del st.session_state["repeat_probe"]
+            st.rerun()
+
+if "ablation_probe" in st.session_state:
+    ab = st.session_state.ablation_probe
+    with st.expander(f"입력 의존성 결과 — Episode {ab['episode']}, "
+                     f"A=frame {ab['fa']} / B=frame {ab['fb']}", expanded=True):
+        import pandas as pd
+        _names = ["이미지A + stateA", "이미지B + stateA", "이미지A + stateB", "이미지B + stateB"]
+        _tbl = [{"조합": _nm,
+                 "ΔX(mm)": round(ab["out"][_nm][0] * 1000, 2),
+                 "ΔY(mm)": round(ab["out"][_nm][1] * 1000, 2),
+                 "ΔZ(mm)": round(ab["out"][_nm][2] * 1000, 2)} for _nm in _names]
+        _tbl.append({"조합": f"GT (frame {ab['fa']})",
+                     "ΔX(mm)": round(ab["gt_a"][0] * 1000, 2),
+                     "ΔY(mm)": round(ab["gt_a"][1] * 1000, 2),
+                     "ΔZ(mm)": round(ab["gt_a"][2] * 1000, 2)})
+        _tbl.append({"조합": f"GT (frame {ab['fb']})",
+                     "ΔX(mm)": round(ab["gt_b"][0] * 1000, 2),
+                     "ΔY(mm)": round(ab["gt_b"][1] * 1000, 2),
+                     "ΔZ(mm)": round(ab["gt_b"][2] * 1000, 2)})
+        st.dataframe(pd.DataFrame(_tbl), use_container_width=True, hide_index=True)
+
+        _base = np.array(ab["out"]["이미지A + stateA"])
+        _img_eff = float(np.linalg.norm(np.array(ab["out"]["이미지B + stateA"]) - _base)) * 1000
+        _st_eff = float(np.linalg.norm(np.array(ab["out"]["이미지A + stateB"]) - _base)) * 1000
+        _ratio = _img_eff / max(_st_eff, 1e-9)
+        if _ratio < 0.2:
+            _verdict = "이미지 무시 (지름길 학습 의심) — state dropout 또는 waypoint 액션 검토 필요"
+        elif _ratio < 0.7:
+            _verdict = "이미지 부분 사용 — 비전 기여가 약함"
+        else:
+            _verdict = "이미지·state 균형 사용"
+        st.caption(f"이미지 교체 영향 {_img_eff:.2f} mm vs state 교체 영향 {_st_eff:.2f} mm "
+                   f"(비율 {_ratio:.2f}) → {_verdict}")
+        if st.button("의존성 결과 지우기", key="clear_ablation_btn"):
+            del st.session_state["ablation_probe"]
+            st.rerun()
+
+# ── 추론 호출 히스토리 (액션 큐 관찰) ─────────────────────────────────────────
+_history = st.session_state.get("inference_history", [])
+if _history:
+    st.divider()
+    with st.expander(
+        f"추론 호출 히스토리 — 누적 {len(_history)}회 "
+        "(reset_episode를 끄고 연속 실행하면 청크 큐 소비 과정이 보입니다)",
+        expanded=not reset_episode,
+    ):
+        if st.button("히스토리 지우기", key="clear_history_btn"):
+            st.session_state["inference_history"] = []
+            st.rerun()
+
+        import pandas as pd
+        _rows = []
+        for h in _history:
+            a = h["action"]
+            _rows.append({
+                "호출": h["call"],
+                "frame": h["frame"],
+                "reset": "O" if h["reset"] else "X",
+                "latency(ms)": round(h["latency_ms"], 1),
+                "ΔX(mm)": round(a[0] * 1000, 2),
+                "ΔY(mm)": round(a[1] * 1000, 2),
+                "ΔZ(mm)": round(a[2] * 1000, 2),
+                "ΔRx(°)": round(a[3] * 57.2958, 3),
+                "ΔRy(°)": round(a[4] * 57.2958, 3),
+                "ΔRz(°)": round(a[5] * 57.2958, 3),
+                "Grip": round(a[6], 3),
+            })
+        st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
+
+        try:
+            from plotly.subplots import make_subplots
+            import plotly.graph_objects as go
+
+            _calls = [h["call"] for h in _history]
+            fig_h = make_subplots(
+                rows=2, cols=1, shared_xaxes=True,
+                subplot_titles=(
+                    "호출 순서별 위치 델타 (mm)",
+                    "레이턴시 (ms) — 큐에서 꺼낼 땐 급감, 매번 비슷하면 서버가 매번 재추론 중",
+                ),
+                vertical_spacing=0.18,
+            )
+            _mk_h = dict(size=5, opacity=0.7)
+            for dim, color, label in [(0, "#EF4444", "ΔX"), (1, "#22C55E", "ΔY"), (2, "#3B82F6", "ΔZ")]:
+                fig_h.add_trace(go.Scatter(
+                    x=_calls, y=[h["action"][dim] * 1000 for h in _history],
+                    name=f"{label} (mm)", mode="lines+markers", marker=_mk_h,
+                    line=dict(color=color, width=1.5)), row=1, col=1)
+            fig_h.add_trace(go.Scatter(
+                x=_calls, y=[h["latency_ms"] for h in _history],
+                name="latency (ms)", mode="lines+markers", marker=_mk_h,
+                line=dict(color="#F59E0B", width=1.5)), row=2, col=1)
+
+            # reset=True였던 호출 표시 (새 청크 시작점)
+            for h in _history:
+                if h["reset"]:
+                    fig_h.add_vline(x=h["call"], line_width=1, line_dash="dot",
+                                    line_color="#C084FC")
+
+            fig_h.update_layout(height=420, margin=dict(t=50, b=30, l=60, r=20),
+                                template="plotly_dark",
+                                legend=dict(orientation="h", y=1.1))
+            fig_h.update_xaxes(title_text="호출 # (점선 = reset_episode=True, 새 청크 시작)", row=2, col=1)
+            fig_h.update_yaxes(title_text="mm", row=1, col=1)
+            fig_h.update_yaxes(title_text="ms", row=2, col=1)
+            st.plotly_chart(fig_h, use_container_width=True)
+        except ImportError:
+            pass
 
 st.divider()
 st.caption(f"VLA 실제 API 테스트 앱 | 서버: {VLA_API_URL} | 대시보드: http://localhost:8765")

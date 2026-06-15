@@ -13,7 +13,12 @@
 #
 # ── 여기만 수정하세요 ────────────────────────────────────────────────────────
 
-DATASET_NAME="vla_dataset_v0.5.0"
+DATASET_NAME="vla_dataset_v0.5.2"   # v0.5.0과 동일 raw, 동기화만 nearest → 보간 (발견 #8 해결)
+
+# 작업 지시문 — meta/tasks.parquet에 기록되어 학습·추론 시 그대로 사용됨.
+# raw bag에는 지시문이 없으므로 여기서 명시하지 않으면 bag_to_lerobot_eef.py의
+# 하드코딩 기본값이 들어간다. episodes_catalog.yaml에 에피소드별 task가 있으면 그쪽이 우선.
+TASK="Approach to the strawberry stem."
 
 RAW_DIR="/home/user/robot_workspace/vla_ws/data/raw/final_project/vla_dataset_v0.5.0"     # 변환할 raw bag 경로
 MID_DIR="/home/user/robot_workspace/vla_ws/data/mid"                   # LeRobot 데이터셋 저장 경로
@@ -63,6 +68,7 @@ echo ""
 echo "=================================================="
 echo " raw → LeRobot EEF 변환"
 echo " 데이터셋  : $DATASET_NAME"
+echo " 지시문    : $TASK"
 echo " raw 경로  : $RAW_DIR"
 echo " mid 경로  : $DATASET_FULL_PATH"
 echo "=================================================="
@@ -78,6 +84,7 @@ echo ""
 CONVERT_ARGS=(
     --raw-dir    "${RAW_DIR}"
     --output-dir "${DATASET_FULL_PATH}"
+    --task       "${TASK}"
 )
 [[ -n "${CATEGORY_FILTER:-}" ]] && CONVERT_ARGS+=(--category-filter "${CATEGORY_FILTER}")
 [[ "${SKIP_REVIEW:-}" == "true" ]] && CONVERT_ARGS+=(--skip-review)
