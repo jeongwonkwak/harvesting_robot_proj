@@ -8,8 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir \
-    "lerobot[pi]@git+https://github.com/huggingface/lerobot.git"
+COPY lerobot /lerobot
+RUN pip install --no-cache-dir -e "/lerobot[pi]"
 
 RUN pip install --no-cache-dir \
     fastapi \
@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir \
     sentencepiece
 
 WORKDIR /app
-COPY serve_pi05.py .
+COPY serve/docker-18003/serve_pi05.py .
 
 ENV MODEL_PATH=/models/vla-model
 ENV DEVICE=cuda:0

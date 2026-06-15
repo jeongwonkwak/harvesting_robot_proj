@@ -63,7 +63,7 @@ except (ImportError, OSError):
 import numpy as np
 import torch
 from fastapi import FastAPI, HTTPException
-from PIL import Image
+from PIL import Image, ImageOps
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO)
@@ -71,6 +71,7 @@ logger = logging.getLogger(__name__)
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/vla-model")
 MODEL_HOST_PATH = os.environ.get("MODEL_HOST_PATH", "")
+STATS_PATH = os.environ.get("STATS_PATH", MODEL_PATH)
 DEVICE = os.environ.get("DEVICE", "cuda:0")
 
 policy = None
@@ -86,10 +87,10 @@ state_q01: Optional[np.ndarray] = None
 state_q99: Optional[np.ndarray] = None
 N_STATE_REAL = 0   # actual state dim from training stats (e.g., 7 for v0.4.x)
 
-# MIN_MAX stats for action. The model outputs normalized actions in [-1, 1];
-# inverse MIN_MAX maps them back to the original units (m, rad, etc.).
-action_min: Optional[np.ndarray] = None
-action_max: Optional[np.ndarray] = None
+# QUANTILES stats for action. The model outputs normalized actions in [-1, 1];
+# inverse QUANTILES maps them back to the original units (m, rad, etc.).
+action_q01: Optional[np.ndarray] = None
+action_q99: Optional[np.ndarray] = None
 
 
 def _get_tokenizer(p):
@@ -106,7 +107,7 @@ def _get_tokenizer(p):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global policy, tokenizer, tokenizer_max_length
-    global state_q01, state_q99, N_STATE_REAL, action_min, action_max
+    global state_q01, state_q99, N_STATE_REAL, action_q01, action_q99
     logger.info(f"Loading Pi05 from {MODEL_PATH} on {DEVICE} ...")
     t0 = time.time()
 
@@ -129,25 +130,31 @@ async def lifespan(app: FastAPI):
     logger.info(f"Tokenizer ready (max_length={tokenizer_max_length})")
 
     stats_path = os.path.join(
-        MODEL_PATH, "policy_preprocessor_step_2_normalizer_processor.safetensors"
+        STATS_PATH, "policy_preprocessor_step_2_normalizer_processor.safetensors"
     )
     from safetensors.torch import load_file
-    stats = load_file(stats_path)
-    state_q01 = stats["observation.state.q01"].cpu().numpy().astype(np.float32)
-    state_q99 = stats["observation.state.q99"].cpu().numpy().astype(np.float32)
-    N_STATE_REAL = int(state_q01.shape[0])
-    action_min = stats["action.min"].cpu().numpy().astype(np.float32)
-    action_max = stats["action.max"].cpu().numpy().astype(np.float32)
-    logger.info(
-        f"Loaded state QUANTILES stats: N={N_STATE_REAL} "
-        f"q01_range=[{state_q01.min():.4f},{state_q01.max():.4f}] "
-        f"q99_range=[{state_q99.min():.4f},{state_q99.max():.4f}]"
-    )
-    logger.info(
-        f"Loaded action MIN_MAX stats: N={action_min.shape[0]} "
-        f"min_range=[{action_min.min():.4f},{action_min.max():.4f}] "
-        f"max_range=[{action_max.min():.4f},{action_max.max():.4f}]"
-    )
+    if os.path.exists(stats_path):
+        stats = load_file(stats_path)
+        state_q01 = stats["observation.state.q01"].cpu().numpy().astype(np.float32)
+        state_q99 = stats["observation.state.q99"].cpu().numpy().astype(np.float32)
+        N_STATE_REAL = int(state_q01.shape[0])
+        action_q01 = stats["action.q01"].cpu().numpy().astype(np.float32)
+        action_q99 = stats["action.q99"].cpu().numpy().astype(np.float32)
+        logger.info(
+            f"Loaded state QUANTILES stats: N={N_STATE_REAL} "
+            f"q01_range=[{state_q01.min():.4f},{state_q01.max():.4f}] "
+            f"q99_range=[{state_q99.min():.4f},{state_q99.max():.4f}]"
+        )
+        logger.info(
+            f"Loaded action QUANTILES stats: N={action_q01.shape[0]} "
+            f"q01_range=[{action_q01.min():.4f},{action_q01.max():.4f}] "
+            f"q99_range=[{action_q99.min():.4f},{action_q99.max():.4f}]"
+        )
+    else:
+        logger.warning(
+            f"Stats file not found at {stats_path}. "
+            "Running without normalization (identity): state clipped to [-1,1], action returned as-is."
+        )
     logger.info(f"Pi05 ready in {time.time() - t0:.1f}s")
     yield
     del policy, tokenizer
@@ -173,11 +180,16 @@ class PredictResponse(BaseModel):
     # Continuous action sliced to the original dataset dim (e.g., 7 for v0.4.x)
     # — see policy.config.output_features[ACTION].shape[0].
     action: List[float]
+    raw_action: List[float]   # normalized action in [-1, 1] before inverse MIN_MAX
     latency_ms: float
 
 
 def _decode_image(b64: str, size: tuple = IMAGE_SIZE) -> torch.Tensor:
-    img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB").resize(size)
+    # Match training-time resize_with_pad_torch: aspect-ratio-preserving resize
+    # followed by symmetric black padding to `size`. Otherwise a 640x480 frame
+    # gets squashed to 224x224 at inference while training saw letterboxed input.
+    img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+    img = ImageOps.pad(img, size, method=Image.BILINEAR, color=(0, 0, 0), centering=(0.5, 0.5))
     return torch.from_numpy(np.array(img, dtype=np.float32)).permute(2, 0, 1) / 255.0
 
 
@@ -236,10 +248,15 @@ def predict(req: PredictRequest):
         # training): map [q01, q99] → [-1, 1] for the first N_STATE_REAL dims,
         # then discretize into 256 bins. Padding dims (N_STATE_REAL..) are
         # dropped because the training prompt only contained the real state dims.
-        raw = np.array(req.state[:N_STATE_REAL], dtype=np.float32)
-        denom = (state_q99 - state_q01)
-        denom = np.where(denom == 0, 1e-8, denom)
-        normalized = 2.0 * (raw - state_q01) / denom - 1.0
+        n_state = N_STATE_REAL if N_STATE_REAL > 0 else len(req.state)
+        raw = np.array(req.state[:n_state], dtype=np.float32)
+        if state_q01 is not None and state_q99 is not None:
+            denom = (state_q99 - state_q01)
+            denom = np.where(denom == 0, 1e-8, denom)
+            normalized = 2.0 * (raw - state_q01) / denom - 1.0
+        else:
+            # No stats: treat input as already in [-1, 1]
+            normalized = raw
         normalized = np.clip(normalized, -1.0, 1.0)
         bins = np.linspace(-1.0, 1.0, 257)[:-1]   # 256 left edges
         discretized = np.clip(np.digitize(normalized, bins) - 1, 0, 255)
@@ -277,13 +294,15 @@ def predict(req: PredictRequest):
         action = action.cpu().float().numpy()
     action = np.array(action, dtype=np.float32).flatten()
 
-    # Inverse MIN_MAX: model outputs normalized action in [-1, 1];
+    # Inverse QUANTILES: model outputs normalized action in [-1, 1];
     # map back to original units (m, rad) using training stats.
-    # raw = (norm + 1) * (max - min) / 2 + min
-    n = min(action.shape[0], action_min.shape[0])
-    action[:n] = (action[:n] + 1.0) * (action_max[:n] - action_min[:n]) / 2.0 + action_min[:n]
+    # raw = (norm + 1) * (q99 - q01) / 2 + q01
+    raw_action = action.copy()
+    if action_q01 is not None and action_q99 is not None:
+        n = min(action.shape[0], action_q01.shape[0])
+        action[:n] = (action[:n] + 1.0) * (action_q99[:n] - action_q01[:n]) / 2.0 + action_q01[:n]
 
-    return PredictResponse(action=action.tolist(), latency_ms=round(latency_ms, 2))
+    return PredictResponse(action=action.tolist(), raw_action=raw_action.tolist(), latency_ms=round(latency_ms, 2))
 
 
 if __name__ == "__main__":

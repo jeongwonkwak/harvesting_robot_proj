@@ -1,14 +1,15 @@
 services:
   pi05-server:
     build:
-      context: .
-      dockerfile: ${DOCKERFILE:-Dockerfile.pi05}
+      context: ../..
+      dockerfile: serve/docker-18003/${DOCKERFILE:-Dockerfile.pi05}
     image: ${MODEL_NAME:-pi05-model}:latest
     container_name: vla-server-18003
     ports:
       - "${HOST_PORT:-18003}:8003"
     volumes:
       - ${MODEL_HOST_PATH:-../../models/public/pi05_base}:/models/vla-model:ro
+      - ${STATS_HOST_PATH:-../../models/public/pi05_base}:/models/stats-model:ro
       - ./serve_pi05.py:/app/serve_pi05.py:ro
     ipc: host
     ulimits:
@@ -17,6 +18,7 @@ services:
     environment:
       MODEL_PATH: /models/vla-model
       MODEL_HOST_PATH: ${MODEL_HOST_PATH:-}
+      STATS_PATH: /models/stats-model
       DEVICE: ${DEVICE:-cuda:0}
       CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
       PORT: "8003"

@@ -1,10 +1,13 @@
 import argparse
+import os
 import shutil
 from pathlib import Path
 
-ADAPTER_PATH = Path("/models/ours/pi05_sft_v.0.4.2/checkpoints/001914/pretrained_model")
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+
+ADAPTER_PATH = Path("/models/ours/pi05_sft_v.0.5.3/checkpoints/001345/pretrained_model")
 BASE_PATH    = Path("/models/public/pi05_base")
-OUTPUT_PATH  = Path("/models/ours/pi05_sft_v.0.4.2/merged")
+OUTPUT_PATH  = Path("/models/ours/pi05_sft_v.0.5.3/merged/5ep")
 
 import torch
 from peft import PeftModel
