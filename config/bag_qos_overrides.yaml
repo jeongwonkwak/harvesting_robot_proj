@@ -5,10 +5,16 @@
   depth: 10
 
 /camera/camera/color/image_raw:
-  reliability: best_effort
-  durability: volatile
+  reliability: reliable
+  durability: transient_local
   history: keep_last
-  depth: 5
+  depth: 10
+
+/camera2/camera2/color/image_raw:
+  reliability: reliable
+  durability: transient_local
+  history: keep_last
+  depth: 10
 
 /gripper/position:
   reliability: reliable

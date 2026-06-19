@@ -65,6 +65,11 @@ HOME_ACCELERATION       = 250.0
 VLA_VELOCITY            = 5000.0      # VLA 제어 루프에서의 로봇 이동 속도
 VLA_ACCELERATION        = 500.0       # VLA 제어 루프에서의 로봇 이동 가속도
 
+# 안전 후퇴 파라미터 (Stage 4)
+SAFETY_RETREAT_Y_MM     = 150.0       # VLA 시작 전 Y 방향 후퇴 거리 (mm)
+SAFETY_RETREAT_VEL      = 50.0        # 후퇴 속도 mm/s
+SAFETY_RETREAT_ACC      = 200.0       # 후퇴 가속도 mm/s²
+
 # pi05_base: 최대 state/action 차원 (zero-padding 대상)
 _MAX_DIM = 32
 # Doosan e0509: 실사용 차원 (관절 6 + 그리퍼 1)

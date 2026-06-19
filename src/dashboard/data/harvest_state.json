@@ -10,20 +10,20 @@
   "robot_ready": true,
   "robot_error": "",
   "joint_angles": [
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    0.0
+    267.7,
+    -54.47,
+    41.35,
+    -35.87,
+    -76.49,
+    104.31
   ],
   "tcp_pose": [
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    0.0
+    119.51,
+    525.33,
+    792.91,
+    52.91,
+    87.21,
+    -83.34
   ],
   "target_count": 15,
   "attempt_history": [],
@@ -43,17 +43,19 @@
   },
   "pending_joint_command": null,
   "pending_tcp_command": null,
-  "last_updated": "2026-06-15T08:31:34.021323",
+  "last_updated": "2026-06-19T08:27:13.912827",
   "gripper": {
-    "position": 100.0,
-    "raw_pos": 0,
-    "state": "open",
+    "position": 18.9,
+    "raw_pos": 600,
+    "state": "grasping",
     "force": 30.0
   },
   "planned_duration_hours": 0,
+  "ripe_visible": false,
+  "harvest_candidate": false,
   "pending_teleop_command": {
     "command": "stop",
     "speed": 0.2,
-    "sent_at": "2026-06-13T10:37:20.675423"
+    "sent_at": "2026-06-19T08:03:25.827662"
   }
 }

@@ -13,14 +13,21 @@
 #
 # ── 여기만 수정하세요 ────────────────────────────────────────────────────────
 
-DATASET_NAME="vla_dataset_v0.5.2"   # v0.5.0과 동일 raw, 동기화만 nearest → 보간 (발견 #8 해결)
+DATASET_NAME="vla_dataset_v0.7.0"
 
 # 작업 지시문 — meta/tasks.parquet에 기록되어 학습·추론 시 그대로 사용됨.
 # raw bag에는 지시문이 없으므로 여기서 명시하지 않으면 bag_to_lerobot_eef.py의
 # 하드코딩 기본값이 들어간다. episodes_catalog.yaml에 에피소드별 task가 있으면 그쪽이 우선.
-TASK="Approach to the strawberry stem."
+TASK="Find the path to the strawberry stem and grasp it."
+# TASK="Grasp the strawberry stem and pick it."
 
-RAW_DIR="/home/user/robot_workspace/vla_ws/data/raw/final_project/vla_dataset_v0.5.0"     # 변환할 raw bag 경로
+# ── RAW 디렉토리 목록 ──────────────────────────────────────────────────────
+# 여러 개 지정 가능. 두 개 이상이면 임시 디렉토리에 심볼릭 링크로 합친 뒤 변환.
+RAW_DIRS=(
+    "/home/user/robot_workspace/vla_ws/data/raw/final_project/vla_dataset_v0.6.0"
+    "/home/user/robot_workspace/vla_ws/data/raw/final_project/vla_dataset_v0.7.0"
+)
+
 MID_DIR="/home/user/robot_workspace/vla_ws/data/mid"                   # LeRobot 데이터셋 저장 경로
 LEROBOT_DIR="/home/user/robot_workspace/vla_ws/lerobot"
 
@@ -60,9 +67,37 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 echo "로그 저장: $LOG_FILE"
 
 # 경로 기본값 처리
-[[ -z "$RAW_DIR" ]] && RAW_DIR="$WS_DIR/data/raw"
+[[ ${#RAW_DIRS[@]} -eq 0 ]] && RAW_DIRS=("$WS_DIR/data/raw")
 [[ -z "$MID_DIR" ]] && MID_DIR="$WS_DIR/data/mid"
 DATASET_FULL_PATH="$MID_DIR/$DATASET_NAME"
+
+# ── RAW_DIRS 가 여러 개면 임시 디렉토리에 심볼릭 링크로 합침 ─────────────────
+TEMP_RAW_DIR=""
+if [[ ${#RAW_DIRS[@]} -eq 1 ]]; then
+    RAW_DIR="${RAW_DIRS[0]}"
+else
+    TEMP_RAW_DIR="$(mktemp -d "$WS_DIR/data/raw/.combined_XXXXXX")"
+    echo "여러 RAW 디렉토리 → 임시 병합: $TEMP_RAW_DIR"
+    for src_dir in "${RAW_DIRS[@]}"; do
+        echo "  + $src_dir"
+        for ep in "$src_dir"/episode_*; do
+            [[ -e "$ep" ]] || continue
+            ln -s "$ep" "$TEMP_RAW_DIR/$(basename "$ep")"
+        done
+    done
+    total_eps=$(ls "$TEMP_RAW_DIR" | wc -l)
+    echo "  총 에피소드: ${total_eps}개"
+    RAW_DIR="$TEMP_RAW_DIR"
+fi
+
+# 종료 시 임시 디렉토리 자동 정리
+cleanup() {
+    if [[ -n "$TEMP_RAW_DIR" && -d "$TEMP_RAW_DIR" ]]; then
+        rm -rf "$TEMP_RAW_DIR"
+        echo "임시 디렉토리 정리 완료: $TEMP_RAW_DIR"
+    fi
+}
+trap cleanup EXIT
 
 echo ""
 echo "=================================================="

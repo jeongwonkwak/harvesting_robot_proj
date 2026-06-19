@@ -241,6 +241,26 @@ class DoosanController:
         elif not result.success:
             self._node.get_logger().warn("move_line service returned failure.")
 
+    def move_line_stream(self, pose_mm_deg: List[float],
+                         vel_lin: float = 200.0, vel_rot: float = 40.0,
+                         acc_lin: float = 800.0, acc_rot: float = 150.0) -> None:
+        """Non-blocking move_line (sync_type=0) for jog.
+        대형 목표 1회 발사 후 버튼 release 시 move_stop 으로 중단.
+        vel_lin: TCP 선속도(mm/s), vel_rot: 각속도(deg/s)."""
+        if self._sim:
+            return
+        req = MoveLine.Request()
+        req.pos        = [float(p) for p in pose_mm_deg]
+        req.vel        = [float(vel_lin), float(vel_rot)]
+        req.acc        = [float(acc_lin), float(acc_rot)]
+        req.time       = 0.0
+        req.radius     = 0.0
+        req.ref        = 0
+        req.mode       = 0
+        req.blend_type = 0
+        req.sync_type  = 0   # Non-blocking: Python 즉시 반환, 로봇은 계속 실행
+        self._movel_cli.call_async(req)
+
     def jog_multi(self, jog_axis: list, speed: float, move_reference: int = 0) -> None:
         """Continuous cartesian jog. jog_axis: 6-float unit vector [Tx,Ty,Tz,Rx,Ry,Rz],
         speed: % of max (0=stop, + forward, - backward). move_reference: 0=BASE, 1=TOOL."""

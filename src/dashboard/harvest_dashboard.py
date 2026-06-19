@@ -296,9 +296,9 @@ def _camera_worker(camera_id: int = 0, slot: int = 0, serial: str = '',
 
     # ── URL 소스 (ros2_bridge MJPEG 스트림) ──────────────────────────────────
     # cv2.VideoCapture는 MJPEG URL에서 FATAL 크래시 발생 → urllib 직접 파싱
+    # JPEG은 ros2_bridge에서 이미 압축됐으므로 decode/re-encode 없이 바이트 그대로 통과
     if url:
         import urllib.request
-        import numpy as np
         print(f"[Camera{slot}] URL 소스 사용: {url}")
         _cam_infos[slot]["source"] = f"bridge:{url}"
         fc, ft = 0, time.time()
@@ -307,28 +307,25 @@ def _camera_worker(camera_id: int = 0, slot: int = 0, serial: str = '',
                 req = urllib.request.urlopen(url, timeout=10)
                 buf = b''
                 while True:
-                    chunk = req.read(4096)
+                    chunk = req.read(65536)   # 64KB 단위 — 30~80KB JPEG을 1~2번에 읽음
                     if not chunk:
                         break
                     buf += chunk
                     # JPEG 프레임 추출 (SOI=0xFFD8, EOI=0xFFD9)
                     while True:
                         a = buf.find(b'\xff\xd8')
-                        b = buf.find(b'\xff\xd9', a + 2) if a != -1 else -1
-                        if a == -1 or b == -1:
+                        b_pos = buf.find(b'\xff\xd9', a + 2) if a != -1 else -1
+                        if a == -1 or b_pos == -1:
                             break
-                        jpg = buf[a:b + 2]
-                        buf = buf[b + 2:]
-                        arr = np.frombuffer(jpg, dtype=np.uint8)
-                        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                        if frame is not None:
-                            _, out = cv2.imencode('.jpg', frame, enc)
-                            with _cam_locks[slot]: _cam_jpegs[slot] = out.tobytes()
-                            fc += 1
-                            now = time.time()
-                            if now - ft >= 1.0:
-                                with _cam_fps_lock: _cam_fps_v[slot] = fc / (now - ft)
-                                fc, ft = 0, now
+                        jpg = buf[a:b_pos + 2]
+                        buf = buf[b_pos + 2:]
+                        # re-encode 없이 JPEG 바이트 그대로 저장
+                        with _cam_locks[slot]: _cam_jpegs[slot] = jpg
+                        fc += 1
+                        now = time.time()
+                        if now - ft >= 1.0:
+                            with _cam_fps_lock: _cam_fps_v[slot] = fc / (now - ft)
+                            fc, ft = 0, now
             except Exception as e:
                 print(f"[Camera{slot}] URL 읽기 오류: {e}, 3s 후 재시도")
             time.sleep(3)
@@ -427,10 +424,13 @@ def _camera_worker(camera_id: int = 0, slot: int = 0, serial: str = '',
 
 async def _mjpeg_gen(slot: int = 0):
     hdr = b'--frame\r\nContent-Type: image/jpeg\r\n\r\n'
+    last = None
     while True:
         with _cam_locks[slot]: jpg = _cam_jpegs[slot]
-        if jpg: yield hdr + jpg + b'\r\n'
-        await asyncio.sleep(1/25)
+        if jpg and jpg is not last:   # 새 프레임만 전송
+            yield hdr + jpg + b'\r\n'
+            last = jpg
+        await asyncio.sleep(1/30)
 
 # ── HTML ──────────────────────────────────────────────────────────────────────
 HTML = r"""<!DOCTYPE html>
@@ -575,7 +575,7 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
 
 /* BOTTOM ROW */
 .bot{flex:1;min-height:0;display:grid;
-  grid-template-columns:270px 255px 1fr;
+  grid-template-columns:340px 255px 1fr;
   grid-template-rows:auto 0.6fr 1.4fr;
   gap:5px;overflow:hidden}
 
@@ -793,6 +793,20 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
 .sw-vel label{font-size:8px;color:var(--t3);font-weight:700}
 .sw-vel input{width:44px;padding:2px 4px;border:1px solid var(--border);border-radius:3px;
   font-family:var(--mono);font-size:10px;background:var(--bg);outline:none;text-align:right}
+
+/* AUTO SEARCH */
+.as-row{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;margin-bottom:5px}
+.as-cell{display:flex;flex-direction:column;gap:1px}
+.as-cell label{font-size:8px;color:var(--t3);font-weight:700}
+.as-cell input{width:100%;padding:2px 4px;border:1px solid var(--border);border-radius:3px;
+  font-family:var(--mono);font-size:10px;background:var(--bg);outline:none;text-align:right}
+.as-cell input:focus{border-color:var(--yellow);background:#fefce8}
+.as-status{font-size:8.5px;font-family:var(--mono);color:var(--t3);
+  margin:3px 0;padding:4px 6px;background:var(--panel);border-radius:4px;
+  border:1px solid var(--border);min-height:20px;line-height:1.5}
+.as-status.running{color:var(--yellow-tx,#92400e);background:#fef9c3;border-color:#fde68a}
+.as-status.found{color:var(--green-tx);background:var(--green-bg);border-color:#86efac}
+.as-status.stopped{color:var(--red-tx);background:var(--red-bg);border-color:#fca5a5}
 
 /* CAMERA */
 .cam-body{flex:1;min-height:0;position:relative;background:#0a0f1e;
@@ -1195,8 +1209,8 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
           <div class="rec-inp-row">
             <span class="rec-inp-lbl">데이터 경로</span>
             <input class="rec-inp" id="rec-rawdir" type="text"
-              placeholder="/vla_ws/data/raw/final_project/vla_dataset_v0.3.0"
-              value="/vla_ws/data/raw/final_project/vla_dataset_v0.3.0"
+              placeholder="/vla_ws/data/raw/final_project/vla_dataset_v0.7.0"
+              value="/vla_ws/data/raw/final_project/vla_dataset_v0.7.0"
               style="font-size:9px;padding:4px">
           </div>
           <!-- 제어 버튼 -->
@@ -1204,16 +1218,6 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
             <button class="rec-btn start" id="btn-rec-start" onclick="startRecording()">▶ 녹화 시작</button>
             <button class="rec-btn stop"  id="btn-rec-stop"  onclick="stopRecording()" disabled>■ 녹화 종료</button>
             <button class="rec-btn home"  onclick="moveHome()">⌂ 홈 이동</button>
-            <button class="rec-btn convert" onclick="convertData()">⚙ 데이터 변환</button>
-            <!-- 변환 진행률 바 -->
-            <div id="convert-progress-container" style="display:none;margin-top:6px">
-              <div style="font-size:9px;color:var(--t3);margin-bottom:2px;font-weight:700">변환 중...</div>
-              <div style="width:100%;height:12px;background:var(--bg);border:1px solid var(--border);border-radius:2px;overflow:hidden">
-                <div id="convert-progress-bar" style="height:100%;background:var(--purple);width:0%;transition:width 0.3s;display:flex;align-items:center;justify-content:center">
-                  <span id="convert-progress-text" style="font-size:8px;color:#fff;font-weight:700"></span>
-                </div>
-              </div>
-            </div>
           </div>
           <!-- 그리퍼 -->
           <div class="sec-lbl" style="color:var(--cyan-tx);margin-top:4px">그리퍼 즉시 제어</div>
@@ -1227,6 +1231,7 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
           <div style="display:flex;align-items:center;gap:4px;margin-bottom:4px">
             <div class="sec-lbl" style="color:var(--green-tx);margin:0">단계별 웨이포인트</div>
             <span class="ph-badge" id="sw-badge" style="background:var(--green-bg);border-color:#86efac;color:var(--green-tx);margin-left:auto">대기</span>
+            <button class="jbtn s" style="font-size:8px;padding:2px 5px;background:var(--blue);color:#fff" onclick="swRunAll()" id="sw-run-all-btn">▶▶ 전체 실행</button>
             <button class="jbtn s" style="font-size:8px;padding:2px 5px" onclick="swSaveToServer()">저장</button>
             <button class="jbtn s" style="font-size:8px;padding:2px 5px" onclick="swReset()">초기화</button>
           </div>
@@ -1255,6 +1260,35 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);
           </div>
           <!-- 결과 표시 -->
           <div id="vla-result" style="font-size:8.5px;font-family:var(--mono);color:var(--t3);margin-top:4px;line-height:1.4">—</div>
+
+          <!-- 자동 탐색 구분선 -->
+          <div style="height:2px;background:linear-gradient(90deg,#f59e0b,#fbbf24);border-radius:1px;margin:6px 0 5px;opacity:.4"></div>
+          <div style="display:flex;align-items:center;gap:4px;margin-bottom:4px">
+            <div class="sec-lbl" style="color:#92400e;margin:0">자동 탐색 (Auto Search)</div>
+            <span class="ph-badge" id="as-badge" style="background:#fef9c3;border-color:#fde68a;color:#92400e;margin-left:auto">대기</span>
+          </div>
+          <!-- 탐색 범위 -->
+          <div style="font-size:8px;color:var(--t3);margin-bottom:3px">탐색 범위 (mm) — HOME 기준 ± 편차</div>
+          <div class="as-row">
+            <div class="as-cell"><label>dX (mm)</label><input type="number" id="as-dx" value="80" step="10" min="0"></div>
+            <div class="as-cell"><label>dY (mm)</label><input type="number" id="as-dy" value="80" step="10" min="0"></div>
+            <div class="as-cell"><label>dZ (mm)</label><input type="number" id="as-dz" value="40" step="10" min="0"></div>
+          </div>
+          <!-- ROI 반경 + 탐색 속도 -->
+          <div class="as-row">
+            <div class="as-cell"><label>ROI 반경 (mm)</label><input type="number" id="as-roi" value="120" step="10" min="20"></div>
+            <div class="as-cell"><label>웨이포인트 수</label><input type="number" id="as-nwp" value="6" step="1" min="2" max="20"></div>
+            <div class="as-cell"><label>탐색 속도 (%)</label><input type="number" id="as-vel" value="30" step="1" min="1" max="50"></div>
+          </div>
+          <!-- 상태 표시 -->
+          <div class="as-status" id="as-status">대기 — ALIGN 웨이포인트가 ROI 기준점으로 사용됩니다.</div>
+          <!-- 제어 버튼 -->
+          <div class="rec-btns" style="margin-top:4px">
+            <button class="rec-btn" id="btn-as-start" onclick="startAutoSearch()"
+              style="background:#f59e0b;color:#fff;border-color:#f59e0b">&#9654; 자동 탐색 시작</button>
+            <button class="rec-btn" id="btn-as-stop"  onclick="stopAutoSearch()"
+              style="background:var(--red-bg);border-color:#fca5a5;color:var(--red-tx)" disabled>&#9632; 정지</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1442,10 +1476,13 @@ let sensorGraphData = {
   x: [], y: [], z: [],
   gripper: []
 };
-/* 액션 타임라인 데이터 (TCP 델타 mm + 그리퍼 raw /740) */
+/* 액션 타임라인 데이터 (위치 델타 mm + 회전 델타 deg + 그리퍼) */
 let actionTimelineData = {
-  dx: [], dy: [], dz: [], gripper: [],
-  _prevTcp: null   // 이전 샘플 TCP [x,y,z] — delta 계산용
+  dx: [], dy: [], dz: [],
+  drx: [], dry: [], drz: [],
+  gripper: [],
+  _prevPos: null,
+  _prevRot: null,
 };
 const MAX_GRAPH_POINTS = 100;
 
@@ -1477,15 +1514,20 @@ async function updateSensorGraph() {
     sensorGraphData.z.push(tcpNorm[2]);
     sensorGraphData.gripper.push(data.gripper_position || 0);
 
-    // 액션 타임라인: TCP 델타 (mm) + 그리퍼 raw /740
-    const curTcp = data.tcp_position;  // [x, y, z] in mm
-    const prev   = actionTimelineData._prevTcp;
-    actionTimelineData.dx.push(prev ? curTcp[0] - prev[0] : 0);
-    actionTimelineData.dy.push(prev ? curTcp[1] - prev[1] : 0);
-    actionTimelineData.dz.push(prev ? curTcp[2] - prev[2] : 0);
-    actionTimelineData._prevTcp = curTcp.slice();
-    // 100%=열림=raw0, 0%=닫힘=raw740
-    actionTimelineData.gripper.push(Math.round((1 - (data.gripper_position || 0) / 100) * 740));
+    // 액션 타임라인: 위치 델타(mm) + 회전 델타(deg) + 그리퍼
+    const curPos = data.tcp_position || [0,0,0];
+    const curRot = data.tcp_rotation || [0,0,0];
+    const pp = actionTimelineData._prevPos;
+    const pr = actionTimelineData._prevRot;
+    actionTimelineData.dx.push(pp ? curPos[0]-pp[0] : 0);
+    actionTimelineData.dy.push(pp ? curPos[1]-pp[1] : 0);
+    actionTimelineData.dz.push(pp ? curPos[2]-pp[2] : 0);
+    actionTimelineData.drx.push(pr ? curRot[0]-pr[0] : 0);
+    actionTimelineData.dry.push(pr ? curRot[1]-pr[1] : 0);
+    actionTimelineData.drz.push(pr ? curRot[2]-pr[2] : 0);
+    actionTimelineData._prevPos = curPos.slice();
+    actionTimelineData._prevRot = curRot.slice();
+    actionTimelineData.gripper.push(Math.round((1-(data.gripper_position||0)/100)*740));
 
     // 최대값 초과 시 제거
     while (sensorGraphData.timestamps.length > MAX_GRAPH_POINTS) {
@@ -1496,8 +1538,9 @@ async function updateSensorGraph() {
       sensorGraphData.gripper.shift();
     }
     while (actionTimelineData.dx.length > MAX_GRAPH_POINTS) {
-      actionTimelineData.dx.shift(); actionTimelineData.dy.shift();
-      actionTimelineData.dz.shift(); actionTimelineData.gripper.shift();
+      actionTimelineData.dx.shift(); actionTimelineData.dy.shift(); actionTimelineData.dz.shift();
+      actionTimelineData.drx.shift(); actionTimelineData.dry.shift(); actionTimelineData.drz.shift();
+      actionTimelineData.gripper.shift();
     }
 
     // 그래프 렌더링
@@ -1537,43 +1580,42 @@ async function updateSensorGraph() {
       document.getElementById('sensor-status').style.color = data.recording ? 'var(--red)' : 'var(--t3)';
     }
 
-    // 액션 타임라인 렌더링 (vla_inference_mock_test.py 스타일: 2분할)
+    // 액션 타임라인 렌더링 (3분할: 위치 / 회전 / 그리퍼)
     if (actionTimelineData.dx.length > 0) {
       const ax = Array.from({length: actionTimelineData.dx.length}, (_, i) => i);
+      const mk = {size: 3, opacity: 0.7};
       const atTraces = [
-        {x: ax, y: actionTimelineData.dx, name: 'ΔX', mode: 'lines+markers',
-         marker: {size: 3, opacity: 0.7}, line: {color: '#EF4444', width: 1.5}, yaxis: 'y'},
-        {x: ax, y: actionTimelineData.dy, name: 'ΔY', mode: 'lines+markers',
-         marker: {size: 3, opacity: 0.7}, line: {color: '#22C55E', width: 1.5}, yaxis: 'y'},
-        {x: ax, y: actionTimelineData.dz, name: 'ΔZ', mode: 'lines+markers',
-         marker: {size: 3, opacity: 0.7}, line: {color: '#3B82F6', width: 1.5}, yaxis: 'y'},
-        {x: ax, y: actionTimelineData.gripper, name: 'Grip /740', mode: 'lines+markers',
-         marker: {size: 3, opacity: 0.7}, line: {color: '#F59E0B', width: 1.5}, yaxis: 'y2'},
+        {x:ax, y:actionTimelineData.dx,  name:'ΔX',  mode:'lines+markers', marker:mk, line:{color:'#EF4444',width:1.5}, yaxis:'y'},
+        {x:ax, y:actionTimelineData.dy,  name:'ΔY',  mode:'lines+markers', marker:mk, line:{color:'#22C55E',width:1.5}, yaxis:'y'},
+        {x:ax, y:actionTimelineData.dz,  name:'ΔZ',  mode:'lines+markers', marker:mk, line:{color:'#3B82F6',width:1.5}, yaxis:'y'},
+        {x:ax, y:actionTimelineData.drx, name:'ΔRx', mode:'lines+markers', marker:mk, line:{color:'#F97316',width:1.5,dash:'dot'}, yaxis:'y2'},
+        {x:ax, y:actionTimelineData.dry, name:'ΔRy', mode:'lines+markers', marker:mk, line:{color:'#A855F7',width:1.5,dash:'dot'}, yaxis:'y2'},
+        {x:ax, y:actionTimelineData.drz, name:'ΔRz', mode:'lines+markers', marker:mk, line:{color:'#06B6D4',width:1.5,dash:'dot'}, yaxis:'y2'},
+        {x:ax, y:actionTimelineData.gripper, name:'Grip', mode:'lines+markers', marker:mk, line:{color:'#F59E0B',width:1.5}, yaxis:'y3'},
       ];
+      const gl = {showgrid:true, gridwidth:0.5, gridcolor:'#e2e8f0', zeroline:true,
+                  zerolinecolor:'#94A3B8', zerolinewidth:1, tickfont:{size:8}};
       const atLayout = {
-        margin: {l: 45, r: 15, t: 18, b: 28},
-        xaxis: {showgrid: true, gridwidth: 0.5, gridcolor: '#e2e8f0', tickfont: {size: 8}},
-        yaxis:  {domain: [0.52, 1.0], title: 'mm', showgrid: true, gridwidth: 0.5,
-                 gridcolor: '#e2e8f0', zeroline: true, zerolinecolor: '#94A3B8',
-                 zerolinewidth: 1, tickfont: {size: 8}},
-        yaxis2: {domain: [0.0, 0.44], title: '/740', range: [0, 740],
-                 showgrid: true, gridwidth: 0.5, gridcolor: '#e2e8f0', tickfont: {size: 8}},
-        plot_bgcolor: '#fff', paper_bgcolor: '#fff',
-        font: {family: "'JetBrains Mono', monospace", size: 9, color: '#475569'},
-        legend: {x: 0, y: 1.07, xanchor: 'left', yanchor: 'bottom', font: {size: 8},
-                 bgcolor: 'rgba(255,255,255,0.85)', bordercolor: '#e2e8f0', borderwidth: 1,
-                 orientation: 'h'},
-        hovermode: 'x unified',
+        margin: {l:45, r:15, t:18, b:28},
+        xaxis:  {showgrid:true, gridwidth:0.5, gridcolor:'#e2e8f0', tickfont:{size:8}},
+        yaxis:  {...gl, domain:[0.68,1.0], title:'mm'},
+        yaxis2: {...gl, domain:[0.34,0.62], title:'deg'},
+        yaxis3: {...gl, domain:[0.0,0.28],  title:'/740', range:[0,740], zeroline:false},
+        plot_bgcolor:'#fff', paper_bgcolor:'#fff',
+        font: {family:"'JetBrains Mono', monospace", size:9, color:'#475569'},
+        legend: {x:0, y:1.07, xanchor:'left', yanchor:'bottom', font:{size:8},
+                 bgcolor:'rgba(255,255,255,0.85)', bordercolor:'#e2e8f0', borderwidth:1,
+                 orientation:'h'},
+        hovermode:'x unified',
         annotations: [
-          {text: '위치 델타 (mm)', x: 0.01, y: 0.99, xref: 'paper', yref: 'paper',
-           xanchor: 'left', yanchor: 'top', font: {size: 8, color: '#64748b'}, showarrow: false},
-          {text: '그리퍼 (/740)', x: 0.01, y: 0.44, xref: 'paper', yref: 'paper',
-           xanchor: 'left', yanchor: 'top', font: {size: 8, color: '#64748b'}, showarrow: false},
+          {text:'위치 Δ(mm)',  x:0.01,y:0.99, xref:'paper',yref:'paper', xanchor:'left',yanchor:'top', font:{size:8,color:'#64748b'}, showarrow:false},
+          {text:'회전 Δ(deg)', x:0.01,y:0.62, xref:'paper',yref:'paper', xanchor:'left',yanchor:'top', font:{size:8,color:'#64748b'}, showarrow:false},
+          {text:'그리퍼',       x:0.01,y:0.28, xref:'paper',yref:'paper', xanchor:'left',yanchor:'top', font:{size:8,color:'#64748b'}, showarrow:false},
         ],
       };
-      Plotly.react('action-timeline-plot', atTraces, atLayout, {responsive: true, displayModeBar: false});
+      Plotly.react('action-timeline-plot', atTraces, atLayout, {responsive:true, displayModeBar:false});
       document.getElementById('action-timeline-empty').style.display = 'none';
-      const recTxt = data.recording ? '● 녹화 중' : 'ΔX · ΔY · ΔZ · Grip';
+      const recTxt = data.recording ? '● 녹화 중' : 'ΔX·Y·Z · ΔRx·Ry·Rz · Grip';
       document.getElementById('action-status').textContent = recTxt;
       document.getElementById('action-status').style.color = data.recording ? 'var(--red)' : 'var(--t3)';
     }
@@ -1794,18 +1836,66 @@ async function sendTcpCmd(){
 }
 
 /* ── STAGE WAYPOINTS ─────────────────────────────────────── */
-const SW_KEY = 'sw_stages_v1';
+const SW_KEY = 'sw_stages_v5';
 const SW_DEFAULTS = [
-  {name:'APPROACH', x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:null,vel:10},
-  {name:'SEARCH',   x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:null,vel:10},
-  {name:'ALIGN',    x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:null,vel:10},
-  {name:'GRASP',    x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:0,   vel:5 },
-  {name:'HOME',     x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:100, vel:15},
+  {name:'APPROACH',    x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:null,vel:10},
+  {name:'SEARCH',      x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:null,vel:10},
+  {name:'REPOSITION',  x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:null,vel:10},
+  {name:'ALIGN',       x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:null,vel:10},
+  {name:'GRASP',       x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:0,   vel:5 },
+  {name:'PULL_DOWN',   x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:null,vel:5 },
+  {name:'HOME',        x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:100, vel:15},
 ];
+const _NAME_MAP = {'PULL_BACK':'REPOSITION', 'LOWER':'PULL_DOWN', 'PRE_GRASP_POSITION':'REPOSITION'};
 
 function swLoad(){
-  try{ return JSON.parse(localStorage.getItem(SW_KEY)) || SW_DEFAULTS.map(s=>({...s})); }
-  catch{ return SW_DEFAULTS.map(s=>({...s})); }
+  // v5 우선
+  try{
+    const d = JSON.parse(localStorage.getItem(SW_KEY));
+    if(d && d.length === 7) return d;
+  }catch{}
+  // v4/v3 (7단계) → 이름만 교체해서 v5로 마이그레이션
+  for(const oldKey of ['sw_stages_v4','sw_stages_v3']){
+    try{
+      const old = JSON.parse(localStorage.getItem(oldKey));
+      if(old && old.length === 7){
+        const migrated = old.map(s => ({...s, name: _NAME_MAP[s.name] || s.name}));
+        swSave(migrated);
+        return migrated;
+      }
+    }catch{}
+  }
+  // v2 (6단계) → GRASP 뒤에 PULL_DOWN 삽입
+  try{
+    const v2 = JSON.parse(localStorage.getItem('sw_stages_v2'));
+    if(v2 && v2.length === 6){
+      const migrated = [
+        v2[0], v2[1], v2[2], v2[3], v2[4],
+        {name:'PULL_DOWN', x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:null,vel:5},
+        v2[5],
+      ];
+      swSave(migrated);
+      return migrated;
+    }
+  }catch{}
+  // v1 (5단계) → REPOSITION + PULL_DOWN 삽입
+  try{
+    const v1 = JSON.parse(localStorage.getItem('sw_stages_v1'));
+    if(v1 && v1.length === 5){
+      const migrated = [
+        {...v1[0], name:'APPROACH'},
+        {...v1[1], name:'SEARCH'},
+        {name:'REPOSITION', x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:null,vel:10},
+        {...v1[2], name:'ALIGN'},
+        {...v1[3], name:'GRASP'},
+        {name:'PULL_DOWN', x:0,y:0,z:0,rx:0,ry:0,rz:0,gripper:null,vel:5},
+        {...v1[4], name:'HOME'},
+      ];
+      swSave(migrated);
+      return migrated;
+    }
+  }catch{}
+  return SW_DEFAULTS.map(s=>({...s}));
 }
 function swSave(stages){ localStorage.setItem(SW_KEY, JSON.stringify(stages)); }
 
@@ -1931,8 +2021,215 @@ function swReset(){
   swRender();
 }
 
+/* 전체 단계 순서 실행 (포즈 저장된 단계만) */
+let _swRunning = false;
+async function swRunAll(){
+  if(_swRunning){ alert('이미 실행 중입니다.'); return; }
+  const stages = swLoad();
+  const saved = stages.filter(s => swHasPose(s));
+  if(saved.length === 0){ alert('저장된 웨이포인트가 없습니다.'); return; }
+  if(!confirm(`${stages.length}단계 순서를 실행합니까?\n(포즈 저장된 ${saved.length}단계만 이동)`)) return;
+
+  _swRunning = true;
+  const btn = document.getElementById('sw-run-all-btn');
+  const badge = document.getElementById('sw-badge');
+  if(btn) btn.disabled = true;
+
+  try{
+    for(let i=0; i<stages.length; i++){
+      const s = stages[i];
+      if(!swHasPose(s)) continue;  // 포즈 미설정 단계 건너뜀
+
+      // 단계 표시
+      if(badge){ badge.textContent=`${i+1}/${stages.length} ${s.name}`;
+        badge.style.cssText='background:var(--blue-bg);border-color:#bfdbfe;color:var(--blue-tx)'; }
+      const runBtn = document.getElementById(`sw-run-${i}`);
+      if(runBtn) runBtn.style.background='var(--blue)';
+
+      // 이동
+      const cur  = (lastState||{}).tcp_pose;
+      const target = [s.x, s.y, s.z, s.rx, s.ry, s.rz];
+      const vel  = s.vel || 10;
+      if(cur && cur.length===6){
+        const r = await fetch(TELEOP_API+'/spline',{method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({waypoints:[cur,target],velocity:vel})}).catch(()=>null);
+        if(!r||!r.ok){ badge.textContent=`${s.name} 이동 실패`; break; }
+      } else {
+        await fetch(TELEOP_API+'/move',{method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({command:'tcp',pose:target,velocity:vel})}).catch(()=>{});
+      }
+
+      // 이동 완료 대기 (속도/거리 기반 추정 — 최소 1s, 최대 5s)
+      const dist = cur ? Math.hypot(s.x-cur[0], s.y-cur[1], s.z-cur[2]) : 300;
+      const waitMs = Math.min(5000, Math.max(1000, dist / (vel*10) * 1000 + 500));
+      await new Promise(res=>setTimeout(res, waitMs));
+
+      // 그리퍼 조작
+      if(s.gripper !== null){
+        await fetch(TELEOP_API+'/gripper',{method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({position:s.gripper, force:30})}).catch(()=>{});
+        await new Promise(res=>setTimeout(res, 800));
+      }
+
+      if(runBtn) runBtn.style.background='';
+    }
+    if(badge){ badge.textContent='완료'; badge.style.cssText='background:var(--green-bg);border-color:#86efac;color:var(--green-tx)'; }
+    setTimeout(()=>{ if(badge){badge.textContent='대기';badge.style.cssText='';} }, 3000);
+  }catch(e){
+    if(badge){ badge.textContent='오류'; badge.style.cssText='background:var(--red-bg);color:var(--red-tx)'; }
+  }finally{
+    _swRunning = false;
+    if(btn) btn.disabled = false;
+  }
+}
+
 // 초기 렌더
 swRender();
+
+/* ── AUTO SEARCH ──────────────────────────────────────────────────────── */
+let _asRunning = false;
+let _asStop    = false;
+
+function _asSetStatus(msg, cls=''){
+  const el = document.getElementById('as-status');
+  const bg = document.getElementById('as-badge');
+  if(!el) return;
+  el.textContent = msg;
+  el.className = 'as-status' + (cls ? ' ' + cls : '');
+  if(bg) bg.textContent = cls==='running'?'실행 중' : cls==='found'?'감지됨' : cls==='stopped'?'정지' : '대기';
+}
+
+function _asGetAlignCenter(){
+  const stages = swLoad();
+  const al = stages.find(s => s.name === 'ALIGN');
+  return al && (al.x||al.y||al.z) ? [al.x, al.y, al.z, al.rx, al.ry, al.rz] : null;
+}
+
+function _asGetHome(){
+  const stages = swLoad();
+  const h = stages.find(s => s.name === 'HOME');
+  return h && (h.x||h.y||h.z) ? [h.x, h.y, h.z, h.rx, h.ry, h.rz] : null;
+}
+
+const AS_Y_BUFFER = 50;  // ALIGN Y 기준 이 거리(mm) 이내로 중간 웨이포인트 진입 금지
+
+function _generateSearchWaypoints(home6, align6, dx, dy, dz, n){
+  // 에피소드별 횡방향 편차 (한 방향으로 정해지고 sine 가중치로 중간에만 최대 편차)
+  const ox = -Math.random() * dx;  // 항상 -X 방향(왼쪽) 접근 — +X쪽은 카메라 사각지대
+  const oy = (Math.random() - 0.5) * 2 * dy;
+  const oz = (Math.random() - 0.5) * 2 * dz;
+  const yMax = align6[1] - AS_Y_BUFFER;  // 중간 웨이포인트 Y 상한 (ALIGN Y - 5cm)
+  const wp = [];
+  for(let i = 0; i < n; i++){
+    const t = (i + 1) / (n + 1);
+    const w = Math.sin(t * Math.PI);
+    wp.push([
+      home6[0] + (align6[0] - home6[0]) * t + ox * w,
+      Math.min(home6[1] + (align6[1] - home6[1]) * t + oy * w, yMax),  // +Y 금지 (버퍼 포함)
+      home6[2] + (align6[2] - home6[2]) * t + oz * w,
+      home6[3] + (align6[3] - home6[3]) * t,  // rx: HOME→ALIGN 선형 보간
+      home6[4] + (align6[4] - home6[4]) * t,  // ry
+      home6[5] + (align6[5] - home6[5]) * t,  // rz
+    ]);
+  }
+  // 마지막 웨이포인트도 Y 버퍼 적용 — ALIGN Y 벽까지 가지 않음
+  wp.push([align6[0], yMax, align6[2], align6[3], align6[4], align6[5]]);
+  return wp;
+}
+
+async function startAutoSearch(){
+  if(_asRunning){ alert('이미 실행 중입니다.'); return; }
+
+  const align6 = _asGetAlignCenter();
+  if(!align6){ alert('ALIGN 웨이포인트가 설정되지 않았습니다.\n단계별 웨이포인트에서 ALIGN을 먼저 캡처해 주세요.'); return; }
+
+  const home6 = _asGetHome();
+  if(!home6){ alert('HOME 웨이포인트가 설정되지 않았습니다.'); return; }
+
+  const dx  = parseFloat(document.getElementById('as-dx').value)  || 80;
+  const dy  = parseFloat(document.getElementById('as-dy').value)  || 80;
+  const dz  = parseFloat(document.getElementById('as-dz').value)  || 40;
+  const roi = parseFloat(document.getElementById('as-roi').value) || 120;
+  const nwp = parseInt(document.getElementById('as-nwp').value)   || 6;
+  const vel = parseFloat(document.getElementById('as-vel').value) || 20;
+
+  _asRunning = true;
+  _asStop    = false;
+  document.getElementById('btn-as-start').disabled = true;
+  document.getElementById('btn-as-stop').disabled  = false;
+
+  const waypoints = _generateSearchWaypoints(home6, align6, dx, dy, dz, nwp);
+  _asSetStatus(`웨이포인트 ${waypoints.length}개 생성 — 단일 spline으로 탐색 시작`, 'running');
+
+  // 전체 경로 길이 추정 (ROI 폴링 시간 계산용)
+  let totalDist = 0;
+  const allPts = [home6, ...waypoints];
+  for(let i = 1; i < allPts.length; i++)
+    totalDist += Math.hypot(allPts[i][0]-allPts[i-1][0], allPts[i][1]-allPts[i-1][1], allPts[i][2]-allPts[i-1][2]);
+  const totalMs = Math.max(10000, totalDist / (vel * 10) * 1000 * 2 + 2000);
+
+  try{
+    // 전체 웨이포인트를 단일 spline 명령으로 전송 → 끊김 없는 연속 경로
+    await fetch(TELEOP_API+'/spline', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({waypoints: allPts, velocity: vel})}).catch(()=>{});
+
+    // ROI 폴링 — spline 실행 중 200ms마다 거리 체크
+    const tEnd = Date.now() + totalMs;
+    while(Date.now() < tEnd){
+      if(_asStop) break;
+      await new Promise(res=>setTimeout(res, 200));
+
+      const tcp = (lastState||{}).tcp_pose;
+      if(!tcp || tcp.length < 3) continue;
+
+      const d = Math.hypot(tcp[0]-align6[0], tcp[1]-align6[1], tcp[2]-align6[2]);
+      const harvCand = (lastState||{}).harvest_candidate || false;
+      _asSetStatus(`탐색 중 d=${d.toFixed(0)}mm (ROI=${roi}mm)`, 'running');
+
+      if(d < roi){
+        const msg = harvCand
+          ? `ROI 진입 + HARVEST 감지 (d=${d.toFixed(0)}mm) — 수동 인계해 주세요.`
+          : `ROI 진입 (d=${d.toFixed(0)}mm) — 수동 인계해 주세요.`;
+        fetch(TELEOP_API+'/move', {method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({command:'stop'})}).catch(()=>{});
+        _asSetStatus(msg, 'found');
+        _asRunning = false;
+        document.getElementById('btn-as-start').disabled = false;
+        document.getElementById('btn-as-stop').disabled  = true;
+        return;
+      }
+    }
+
+    // 종료 시 항상 정지
+    fetch(TELEOP_API+'/move', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({command:'stop'})}).catch(()=>{});
+
+    if(_asStop){
+      _asSetStatus('수동 정지됨', 'stopped');
+    } else {
+      _asSetStatus('탐색 완료 — HARVEST 후보 미감지. 수동으로 확인해 주세요.', 'stopped');
+    }
+  } catch(e){
+    _asSetStatus('오류: ' + e.message, 'stopped');
+  } finally {
+    _asRunning = false;
+    document.getElementById('btn-as-start').disabled = false;
+    document.getElementById('btn-as-stop').disabled  = true;
+  }
+}
+
+function stopAutoSearch(){
+  _asStop = true;
+  _asSetStatus('정지 요청됨…', 'stopped');
+  fetch('/api/teleop', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({command:'stop'})}).catch(()=>{});
+}
 
 /* 텔레오프 */
 const TELEOP_LBL={forward:'전진 ↑',backward:'후진 ↓',left:'좌 ←',right:'우 →',
@@ -2411,20 +2708,29 @@ setInterval(async()=>{
   updateRecBadge(d.phase||'idle', d.robot_ready, d.robot_error);
 }, 1000);
 
-/* sendTeleop: D-pad/회전 버튼 → jog 시작/정지 */
+/* sendTeleop: D-pad/회전 버튼 → jog 시작/정지
+   stop 에 80ms 딜레이: start 명령이 서버에 먼저 도착하도록 보장
+   (async/await 체인은 /api/teleop 왕복 지연 중 stop이 앞서 도착하는 레이스를 만든다) */
 const _origSendTeleop = sendTeleop;
-sendTeleop = async function(cmd) {
+let _stopTimer = null;
+sendTeleop = function(cmd) {
+  clearTimeout(_stopTimer);
   const sp = parseFloat(document.getElementById('tp-speed')?.value||0.2);
   const rotSp = parseFloat(document.getElementById('rot-speed')?.value||5);
   const ts = document.getElementById('teleop-st');
   if(ts){ts.textContent=TELEOP_LBL[cmd]||cmd;
     ts.style.color=cmd==='stop'?'var(--t3)':'var(--blue)';}
-  await fetch('/api/teleop', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({command:cmd, speed:sp})}).catch(()=>{});
-  /* stop 포함 모든 명령을 teleop API로 전달 (jog 정지에 필요) */
-  const body = {command: cmd, speed_scale: sp, angle_scale: rotSp / 5};
-  await fetch(TELEOP_API+'/move', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(body)}).catch(()=>{});
+  const _doSend = () => {
+    fetch(TELEOP_API+'/move', {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({command:cmd, speed_scale:sp, angle_scale:rotSp/5})}).catch(()=>{});
+    fetch('/api/teleop', {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({command:cmd, speed:sp})}).catch(()=>{});
+  };
+  if (cmd === 'stop') {
+    _stopTimer = setTimeout(_doSend, 80);
+  } else {
+    _doSend();
+  }
 };
 
 /* 키보드 단축키 → sendTeleop
@@ -2567,7 +2873,7 @@ function toggleCamFS(i){
 /* ── VLA 추론 제어 ────────────────────────────────────────────────────────── */
 let _vlaLoopTimer = null;
 let _vlaChunkStep = 0;          // 현재 chunk에서 몇 번째 action을 소비 중인지
-const VLA_CHUNK_SIZE = 50;      // 서버가 한 번 추론으로 생성하는 action 수
+const VLA_CHUNK_SIZE = 10;      // 서버가 한 번 추론으로 생성하는 action 수
 const VLA_LOOP_INTERVAL_MS = 200;  // 학습 데이터 수집 주파수(5Hz)와 일치
 
 function _showVlaResult(d, badge, txt, result, step){
@@ -2857,7 +3163,7 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
 
     @app.post("/api/vla/predict")
     async def vla_predict(request: Request):
-        """VLA 추론 엔드포인트: 현재 카메라 이미지와 상태를 VLA API로 전송하고 로봇 동작 실행"""
+        """VLA 추론 엔드포인트: Action Chunking(10 steps) + Doosan Spline Blending"""
         from io import BytesIO
         try: from PIL import Image
         except ImportError: return JSONResponse({"ok": False, "error": "PIL not installed"}, status_code=400)
@@ -2866,14 +3172,17 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
         instruction = req_body.get("instruction", "Find the path to the strawberry stem and grasp it.")
         reset_episode = req_body.get("reset_episode", False)
 
+        # reset_episode=False → 이전 chunk의 spline 실행 중; 즉시 반환
+        if not reset_episode:
+            return JSONResponse({"ok": True, "queued": True})
+
+        # reset_episode=True → 10개 action 추론 후 spline으로 일괄 전송
         # 카메라 이미지 취득
         with _cam_locks[0]: cam0 = _cam_jpegs[0]
         with _cam_locks[1]: cam1 = _cam_jpegs[1]
         if not cam0 or not cam1:
             return JSONResponse({"ok": False, "error": "카메라 이미지 없음"}, status_code=503)
 
-        # 원본 해상도(640×480) 그대로 base64 전송 — 서버가 letterbox(ImageOps.pad)로 처리.
-        # resize(224,224) 정사각 강제 리사이즈는 학습 시 resize_with_pad와 불일치(발견 #5).
         def encode_jpeg(jpeg_bytes):
             img = Image.open(BytesIO(jpeg_bytes)).convert('RGB')
             buf = BytesIO()
@@ -2883,143 +3192,123 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
         cam0_b64 = encode_jpeg(cam0)
         cam1_b64 = encode_jpeg(cam1)
 
-        # 상태 파일에서 현재 TCP pose, gripper 읽기
         s = _load()
         tcp_pose = s.get("tcp_pose", [0]*6)  # mm/deg
         gripper_pos = s.get("gripper", {}).get("position", 100)  # 0-100
 
-        # 32-dim state 벡터 구성: [tcp_x_m, tcp_y_m, tcp_z_m, rx_rad, ry_rad, rz_rad, gripper_ratio, 0×25]
+        # 32-dim state 벡터: [x_m, y_m, z_m, rx_rad, ry_rad, rz_rad, gripper_ratio, 0×25]
         state_vec = [
-            tcp_pose[0] / 1000.0,  # X mm → m
-            tcp_pose[1] / 1000.0,  # Y mm → m
-            tcp_pose[2] / 1000.0,  # Z mm → m
-            tcp_pose[3] / 57.2958,  # Rx deg → rad
-            tcp_pose[4] / 57.2958,  # Ry deg → rad
-            tcp_pose[5] / 57.2958,  # Rz deg → rad
-            gripper_pos / 100.0,    # position % → ratio [0, 1]
-        ] + [0.0] * 25  # 패딩
+            tcp_pose[0] / 1000.0,
+            tcp_pose[1] / 1000.0,
+            tcp_pose[2] / 1000.0,
+            tcp_pose[3] / 57.2958,
+            tcp_pose[4] / 57.2958,
+            tcp_pose[5] / 57.2958,
+            gripper_pos / 100.0,
+        ] + [0.0] * 25
 
-        # VLA API 요청
-        # 학습 rename_map: camera2 → left_wrist_0_rgb 이므로 cam1(=camera2)은 left_wrist_image 슬롯으로 전송.
-        # (물리적으로 오른쪽/팔 장착이어도 모델 슬롯 이름 기준을 따라야 학습-추론 일관)
-        vla_req = {
-            "state": state_vec,
-            "base_image": cam0_b64,
-            "left_wrist_image": cam1_b64,
-            "right_wrist_image": None,
-            "instruction": instruction,
-            "reset_episode": reset_episode
-        }
-
-        vla_resp = None
-        try:
+        def _call_vla(reset_ep):
+            vla_req = {
+                "state": state_vec,
+                "base_image": cam0_b64,
+                "left_wrist_image": cam1_b64,
+                "right_wrist_image": None,
+                "instruction": instruction,
+                "reset_episode": reset_ep
+            }
             req_json = json.dumps(vla_req).encode('utf-8')
             req_obj = urllib.request.Request(f'{VLA_API_URL}/predict',
                 data=req_json, headers={'Content-Type': 'application/json'})
-            with urllib.request.urlopen(req_obj, timeout=5) as resp:
-                vla_resp = json.loads(resp.read())
+            with urllib.request.urlopen(req_obj, timeout=10) as resp:
+                return json.loads(resp.read())
+
+        # 10개 action chunk 취득 (1회 reset + 9회 cached)
+        CHUNK = 10
+        actions = []
+        try:
+            r0 = _call_vla(True)
+            if "action" not in r0:
+                return JSONResponse({"ok": False, "error": "VLA 응답에 action 없음"}, status_code=502)
+            actions.append(r0["action"])
+            for _ in range(CHUNK - 1):
+                r = _call_vla(False)
+                if "action" not in r:
+                    break
+                actions.append(r["action"])
         except Exception as e:
             return JSONResponse({"ok": False, "error": f"VLA API 오류: {str(e)}"}, status_code=502)
 
-        if "action" not in vla_resp:
-            return JSONResponse({"ok": False, "error": "VLA 응답에 action 없음"}, status_code=502)
+        if not actions:
+            return JSONResponse({"ok": False, "error": "VLA 액션 없음"}, status_code=502)
 
-        action = vla_resp.get("action", [0]*32)
+        # 10개 action → 누적 절대 waypoints 변환
+        cur = list(tcp_pose)
+        waypoints = []
+        last_gripper_raw = max(0, min(740, int(gripper_pos * 7.4)))
+        for action in actions:
+            delta_mm  = [max(-200, min(200, d * 1000))   for d in action[:3]]
+            delta_deg = [max(-30,  min(30,  d * 57.2958)) for d in action[3:6]]
+            nxt = [cur[i] + delta_mm[i]  for i in range(3)] + \
+                  [cur[3+i] + delta_deg[i] for i in range(3)]
+            dist = sum((nxt[i] - cur[i])**2 for i in range(3)) ** 0.5
+            if dist >= 0.5:  # 0.5mm 미만 이동은 중복 제거
+                waypoints.append(nxt)
+                cur = nxt
+            if len(action) > 6:
+                last_gripper_raw = max(0, min(740, int(action[6])))
 
-        # Action 처리: [0:3] delta_m, [3:6] delta_rad, [6] gripper 0~740 raw, [7:] ignored
-        delta_m = action[:3]
-        delta_rad = action[3:6]
+        first_action = actions[0]
 
-        # 단위 변환 및 안전 클램프
-        delta_mm = [d * 1000 for d in delta_m]  # m → mm
-        delta_mm = [max(-200, min(200, d)) for d in delta_mm]  # ±200mm 클램프
-
-        delta_deg = [d * 57.2958 for d in delta_rad]  # rad → deg
-        delta_deg = [max(-30, min(30, d)) for d in delta_deg]  # ±30deg 클램프
-
-        # action[6]: 0~740 raw 단위 (600=살짝열림 기본값, 740=완전닫힘/파지)
-        gripper_raw = max(0, min(740, int(action[6]) if len(action) > 6 else 0))
-
-        # 목표 TCP pose 계산
-        target_pose = [
-            tcp_pose[0] + delta_mm[0],
-            tcp_pose[1] + delta_mm[1],
-            tcp_pose[2] + delta_mm[2],
-            tcp_pose[3] + delta_deg[0],
-            tcp_pose[4] + delta_deg[1],
-            tcp_pose[5] + delta_deg[2],
-        ]
-
-        # 목표 pose가 도달 가능한지 IK로 검증 (placo 설치 시에만)
+        # IK 검증 (첫 번째 waypoint만, placo 설치 시)
         current_joints = s.get("joint_angles", [0]*6)
-        if _ik_available:
-            target_joints = _tcp_to_joint_angles(target_pose, current_joints)
+        if _ik_available and waypoints:
+            target_joints = _tcp_to_joint_angles(waypoints[0], current_joints)
             if target_joints is None:
                 error_msg = "❌ VLA 목표 pose 도달 불가: IK 계산 실패"
                 _push_msg(s, error_msg, "error")
-                return JSONResponse({
-                    "ok": False,
-                    "error": error_msg,
-                    "action": [float(action[i]) if isinstance(action, (list, np.ndarray)) and i < len(action) else 0.0 for i in range(7)],
-                    "target_pose": target_pose,
-                    "gripper": gripper_raw,
-                    "robot_ok": False
-                })
-
+                return JSONResponse({"ok": False, "error": error_msg})
             is_valid, error_msg = _validate_joint_angles(target_joints)
             if not is_valid:
                 error_msg = f"❌ VLA 목표 pose 도달 불가: {error_msg}"
                 _push_msg(s, error_msg, "error")
-                return JSONResponse({
-                    "ok": False,
-                    "error": error_msg,
-                    "action": [float(action[i]) if isinstance(action, (list, np.ndarray)) and i < len(action) else 0.0 for i in range(7)],
-                    "target_pose": target_pose,
-                    "gripper": gripper_raw,
-                    "robot_ok": False
-                })
+                return JSONResponse({"ok": False, "error": error_msg})
 
-        # Teleop API로 로봇 동작 실행 (모든 축을 한 번에 전송)
+        # /spline 전송 (≥2개 waypoint) 또는 /move fallback (1개)
         robot_ok = False
         try:
-            # 모든 유효한 delta를 하나의 요청으로 전송 — 순차 전송 시 _is_moving 플래그로 2번째부터 무시됨
-            teleop_move_req = {}
-            for axis_name, axis_val in [
-                ('dx', delta_mm[0]), ('dy', delta_mm[1]), ('dz', delta_mm[2]),
-                ('drx', delta_deg[0]), ('dry', delta_deg[1]), ('drz', delta_deg[2]),
-            ]:
-                if abs(axis_val) >= 0.1:
-                    teleop_move_req[axis_name] = axis_val
-
-            move_ok = False
-            if teleop_move_req:
-                teleop_url = f'http://localhost:8767/move'
-                teleop_req = urllib.request.Request(teleop_url,
-                    data=json.dumps(teleop_move_req).encode('utf-8'),
-                    headers={'Content-Type': 'application/json'}, method='POST')
-                try:
-                    with urllib.request.urlopen(teleop_req, timeout=5) as resp:
-                        move_resp = json.loads(resp.read())
-                        move_ok = bool(move_resp.get("ok"))
-                except Exception as e:
-                    print(f'[VLA] move 요청 실패: {e}')
+            if len(waypoints) >= 2:
+                spline_data = json.dumps({"waypoints": waypoints, "velocity": 50.0}).encode('utf-8')
+                spline_req = urllib.request.Request('http://localhost:8767/spline',
+                    data=spline_data, headers={'Content-Type': 'application/json'}, method='POST')
+                with urllib.request.urlopen(spline_req, timeout=5) as resp:
+                    robot_ok = bool(json.loads(resp.read()).get("ok"))
+            elif len(waypoints) == 1:
+                dm = [waypoints[0][i] - tcp_pose[i] for i in range(3)]
+                dr = [waypoints[0][3+i] - tcp_pose[3+i] for i in range(3)]
+                move_body = {k: v for k, v in zip(
+                    ['dx','dy','dz','drx','dry','drz'], dm+dr) if abs(v) >= 0.1}
+                if move_body:
+                    move_data = json.dumps(move_body).encode('utf-8')
+                    move_req = urllib.request.Request('http://localhost:8767/move',
+                        data=move_data, headers={'Content-Type': 'application/json'}, method='POST')
+                    with urllib.request.urlopen(move_req, timeout=5) as resp:
+                        robot_ok = bool(json.loads(resp.read()).get("ok"))
+                else:
+                    robot_ok = True
             else:
-                move_ok = True  # 이동량이 없는 경우는 성공으로 처리
-
-            if move_ok:
-                # 그리퍼 제어
-                gripper_req = {
-                    "position": gripper_raw
-                }
-                gripper_url = f'http://localhost:8767/gripper'
-                gripper_req_obj = urllib.request.Request(gripper_url,
-                    data=json.dumps(gripper_req).encode('utf-8'),
-                    headers={'Content-Type': 'application/json'}, method='POST')
-                with urllib.request.urlopen(gripper_req_obj, timeout=5) as gresp:
-                    gripper_resp = json.loads(gresp.read())
-                    robot_ok = gripper_resp.get("ok", False)
+                robot_ok = True  # 이동량 없음
         except Exception as e:
-            print(f'[VLA] Teleop API 호출 실패: {e}')
+            print(f'[VLA] 이동 요청 실패: {e}')
+
+        # 그리퍼 제어 (chunk 마지막 action 기준)
+        try:
+            gripper_data = json.dumps({"position": last_gripper_raw}).encode('utf-8')
+            gripper_req = urllib.request.Request('http://localhost:8767/gripper',
+                data=gripper_data, headers={'Content-Type': 'application/json'}, method='POST')
+            with urllib.request.urlopen(gripper_req, timeout=5):
+                pass
+        except Exception as e:
+            print(f'[VLA] gripper 요청 실패: {e}')
 
         # 로그 저장
         VLA_LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -3028,25 +3317,21 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
         log_data = {
             "timestamp": now.isoformat(),
             "instruction": instruction,
-            "reset_episode": reset_episode,
+            "reset_episode": True,
+            "chunk_size": len(actions),
+            "waypoints_sent": len(waypoints),
             "state_input": state_vec,
-            "action_raw": list(action[:7]) if isinstance(action, (list, np.ndarray)) else [0]*7,
-            "action_applied": {
-                "delta_mm": delta_mm,
-                "delta_deg": delta_deg,
-                "target_pose_mm_deg": target_pose,
-                "gripper_raw": gripper_raw
-            },
+            "first_action_raw": list(first_action[:7]) if isinstance(first_action, (list, np.ndarray)) else [0]*7,
+            "last_gripper_raw": last_gripper_raw,
             "robot_ok": robot_ok
         }
         log_file.write_text(json.dumps(log_data, ensure_ascii=False, indent=2))
 
-        # 응답
         return JSONResponse({
             "ok": True,
-            "action": [float(action[i]) for i in range(7)] if isinstance(action, (list, np.ndarray)) else [0.0]*7,
-            "target_pose": target_pose,
-            "gripper": gripper_raw,
+            "action": [float(first_action[i]) for i in range(7)] if isinstance(first_action, (list, np.ndarray)) else [0.0]*7,
+            "waypoints_sent": len(waypoints),
+            "gripper": last_gripper_raw,
             "robot_ok": robot_ok
         })
 
@@ -3069,7 +3354,8 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
             "ok": True,
             "timestamp": int(time.time() * 1000),
             "joint_angles": s.get("joint_angles", [0]*6),
-            "tcp_position": s.get("tcp_pose", [0, 0, 0])[:3],  # X, Y, Z만
+            "tcp_position": (s.get("tcp_pose") or [0]*6)[:3],
+            "tcp_rotation": (s.get("tcp_pose") or [0]*6)[3:6],   # Rx, Ry, Rz (deg)
             "gripper_position": s.get("gripper", {}).get("position", 0),
             "recording": recording
         })

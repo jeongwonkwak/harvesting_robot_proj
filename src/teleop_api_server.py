@@ -9,7 +9,7 @@ harvest_dashboard.py(8765) 의 버튼 클릭 → 실제 로봇 제어 + bag 녹�
   RAW_DIR  bag 저장 루트 (기본: WS_DIR/data/raw/final_project)
 """
 
-import os, signal, subprocess, sys, threading, time
+import asyncio, os, signal, subprocess, sys, threading, time
 from datetime import datetime
 from pathlib import Path
 
@@ -64,8 +64,8 @@ HOME_VELOCITY     = 200.0   # mm/s (홈 포즈 이동만 더 느리게)
 HOME_ACCELERATION = 20.0    # mm/s²
 GRIPPER_HOME_POS  = 600
 GRIPPER_MAX_POS   = 740  # 파지: 0~740
-STEP_MM           = 20.0  # 한 번 이동 거리 (mm) — 현재 미사용 (jog 모드로 대체)
-STEP_DEG          = 5.0  # Rx, Ry, Rz 회전 각도
+STEP_MM           = 5.0   # 버튼 한 스텝 이동 거리 (mm)
+STEP_DEG          = 2.0   # 버튼 한 스텝 회전 각도 (deg)
 
 # ── 관절 소프트 리미트 (MoveIt joint_limits.yaml 기준, 추가 5° 마진) ───────────
 def _load_joint_soft_limits():
@@ -94,26 +94,35 @@ def _load_joint_soft_limits():
 
 JOINT_SOFT_LIMITS = _load_joint_soft_limits()  # [(lo_rad, hi_rad), ...]
 
-# ── jog 모드 상수 (jog_multi 서비스 기반 — 드라이버가 직접 연속 속도 제어) ────
-# JogMulti 최대 속도: 250mm/s × 1.73 ≈ 432mm/s
-# JOG_SPEED_PCT=20 → 평행이동 ~85mm/s (안정적인 속도)
-JOG_SPEED_PCT    = 20.0  # 기본 jog 속도 (%) — speed_scale로 조정 가능
-JOG_AXIS_MAP = {
-    'forward':   [ 0,  1,  0,  0,  0,  0],  # +Y
-    'backward':  [ 0, -1,  0,  0,  0,  0],  # -Y
-    'left':      [-1,  0,  0,  0,  0,  0],  # -X
-    'right':     [ 1,  0,  0,  0,  0,  0],  # +X
-    'up':        [ 0,  0,  1,  0,  0,  0],  # +Z
-    'down':      [ 0,  0, -1,  0,  0,  0],  # -Z
-    'rx_plus':   [ 0,  0,  0,  1,  0,  0],
-    'rx_minus':  [ 0,  0,  0, -1,  0,  0],
-    'ry_plus':   [ 0,  0,  0,  0,  1,  0],
-    'ry_minus':  [ 0,  0,  0,  0, -1,  0],
-    'rz_plus':   [ 0,  0,  0,  0,  0,  1],
-    'rz_minus':  [ 0,  0,  0,  0,  0, -1],
-    'rotate_cw': [ 0,  0,  0,  0,  0,  1],  # Rz+ (시계방향)
-    'rotate_ccw':[ 0,  0,  0,  0,  0, -1],  # Rz- (반시계방향)
+# ── jog 모드 상수 ──────────────────────────────────────────────────────────────
+# 모든 방향/회전: move_line_stream + move_stop 방식 통일
+#   jog_multi Y축이 move_stop을 무시하는 Doosan 드라이버 이슈 완전 우회
+#   300mm/30°: 워크스페이스 내 안전 도달 거리 (2000mm는 워크스페이스 밖이라 거부됨)
+#   150mm/s + 600mm/s²: 가속구간 0.25s → 버튼 누르는 동안 자연스럽게 느껴짐
+JOG_VEL_LIN = 150.0   # mm/s
+JOG_VEL_ROT = 20.0    # deg/s
+JOG_ACC_LIN = 600.0   # mm/s²
+JOG_ACC_ROT = 100.0   # deg/s²
+JOG_DIST    = 300.0   # mm  — 대부분 방향에서 워크스페이스 내 안전
+JOG_ROT_DEG = 30.0    # deg — 90°보다 훨씬 작아 Euler coupling 최소화
+
+JOG_CMD_DELTA = {      # (dx, dy, dz, drx, dry, drz)
+    'forward':    ( 0,       JOG_DIST, 0,  0,           0,           0),
+    'backward':   ( 0,      -JOG_DIST, 0,  0,           0,           0),
+    'left':       (-JOG_DIST, 0,       0,  0,           0,           0),
+    'right':      ( JOG_DIST, 0,       0,  0,           0,           0),
+    'up':         ( 0,  0,  JOG_DIST,  0,           0,           0),
+    'down':       ( 0,  0, -JOG_DIST,  0,           0,           0),
+    'rx_plus':    ( 0,  0,  0,  JOG_ROT_DEG, 0,           0),
+    'rx_minus':   ( 0,  0,  0, -JOG_ROT_DEG, 0,           0),
+    'ry_plus':    ( 0,  0,  0,  0,  JOG_ROT_DEG, 0),
+    'ry_minus':   ( 0,  0,  0,  0, -JOG_ROT_DEG, 0),
+    'rz_plus':    ( 0,  0,  0,  0,  0,  JOG_ROT_DEG),
+    'rz_minus':   ( 0,  0,  0,  0,  0, -JOG_ROT_DEG),
+    'rotate_cw':  ( 0,  0,  0,  0,  0,  JOG_ROT_DEG),
+    'rotate_ccw': ( 0,  0,  0,  0,  0, -JOG_ROT_DEG),
 }
+
 QOS_FILE          = str(WS_DIR / 'config/bag_qos_overrides.yaml')
 CAMERA_TOPIC      = '/camera/camera/color/image_raw'
 CAMERA2_TOPIC     = '/camera2/camera2/color/image_raw'
@@ -173,8 +182,9 @@ class TeleopAPIServer:
         self._converting     = False
         self._convert_progress = 0  # 0-100
 
-        # jog 모드 상태
-        self._jogging  = False  # 현재 jog 중 여부
+        # jog 모드 상태 (translation + rotation 모두 _jogging 으로 통합)
+        self._jogging = False
+        self._jog_cmd = None
 
         # 카메라는 호스트에서 실행 (컨테이너 내 librealsense는 D455 펌웨어와 호환되지 않아
         # 프레임이 수신되지 않음). start_cameras.sh 로 호스트에서 띄운다.
@@ -186,10 +196,8 @@ class TeleopAPIServer:
         rs1_cmd = [
             'ros2', 'launch', 'realsense2_camera', 'rs_launch.py',
             'camera_namespace:=camera', 'camera_name:=camera',
-            'enable_color:=true', 'enable_depth:=true',
+            'enable_color:=true', 'enable_depth:=false',
             'rgb_camera.color_profile:=640x480x30',
-            'depth_module.depth_profile:=640x480x30',
-            'align_depth.enable:=true',
         ]
         if SERIAL_CAM1:
             rs1_cmd.append(f"serial_no:='{SERIAL_CAM1}'")
@@ -273,8 +281,7 @@ class TeleopAPIServer:
         while True:
             try:
                 # jog 중에는 GetCurrentPose 서비스 호출을 건너뜀.
-                # jog_multi 와 동시에 20Hz 서비스 콜이 들어가면 드라이버 큐가
-                # 포화되어 흔들림·연결 끊김의 원인이 된다.
+                # move_line_stream 실행 중 동시 서비스 콜이 move_stop 을 밀어낼 수 있다.
                 if not self._jogging:
                     eef = self._robot.get_eef_pose()
                     if eef is not None:
@@ -325,49 +332,60 @@ class TeleopAPIServer:
         threading.Thread(target=_run, daemon=True).start()
         return True, 'OK'
 
-    # ── jog 모드 (jog_multi 서비스 — 드라이버가 직접 연속 속도 제어) ──────────────
+    # ── jog 모드 ──────────────────────────────────────────────────────────────────
 
     def start_jog(self, cmd: str, speed_scale: float = 1.0, angle_scale: float = 1.0):
-        """방향 버튼 press → jog 시작. jog_multi 서비스 한 번 호출로 연속 이동."""
         if not self._robot_ready:
             return
-        axis = JOG_AXIS_MAP.get(cmd)
-        if axis is None:
+        delta = JOG_CMD_DELTA.get(cmd)
+        if delta is None:
             return
 
-        # 이미 jog 중이면 먼저 정지 후 드라이버가 처리할 시간을 준다.
-        # move_stop 과 jog_multi 가 call_async 로 순서 보장 없이 도착하면 흔들림 발생.
-        if self._jogging:
-            self._jogging = False
-            self._robot.move_stop(stop_mode=3)
-            time.sleep(0.12)  # 드라이버 감속 처리 대기
+        if self._jogging and self._jog_cmd == cmd:
+            return
 
-        is_rotation = any(axis[3:])
-        scale = angle_scale if is_rotation else speed_scale
+        # 기존 모션 정지: _jogging=True 유지 → EEF 쿼리 차단 상태에서 move_stop 처리
+        was_jogging = self._jogging
+        if self._jogging:
+            self._robot.move_stop(stop_mode=1)
+            time.sleep(0.15)
+            self._jogging = False
+
+        # jog 중엔 캐시가 낡음 → 명령 전환 시 직접 쿼리로 갱신
+        if was_jogging:
+            fresh = self._robot.get_eef_pose()
+            if fresh is not None:
+                with self._eef_lock:
+                    self._eef_cache = fresh.copy()
+
+        with self._eef_lock:
+            eef = self._eef_cache
+        if eef is None:
+            return
+
+        is_rot = any(delta[3:])
+        scale = angle_scale if is_rot else speed_scale
+        target = eef.copy()
+        for i, d in enumerate(delta):
+            if d:
+                target[i] += d * scale
+
+        self._jog_cmd = cmd
         self._jogging = True
-        self._robot.jog_multi(axis, JOG_SPEED_PCT * scale)
-        threading.Thread(target=self._jog_watchdog, daemon=True).start()
+        self._robot.move_line_stream(
+            target.tolist(),
+            vel_lin=JOG_VEL_LIN * speed_scale,
+            vel_rot=JOG_VEL_ROT * angle_scale,
+            acc_lin=JOG_ACC_LIN,
+            acc_rot=JOG_ACC_ROT,
+        )
 
     def stop_jog(self):
-        """방향 버튼 release → move_stop으로 즉시 정지."""
-        self._jogging = False
         if self._robot_ready:
-            self._robot.move_stop(stop_mode=3)  # DR_HOLD: 부드럽게 감속 정지
-
-    def _jog_watchdog(self):
-        """jog 중 50ms마다 관절각 감시 → 소프트 리미트 초과 시 즉시 정지."""
-        import math
-        while self._jogging:
-            js = self._robot.get_joint_state()  # radians, ndarray(6) or None
-            if js is not None:
-                for i, (lo, hi) in enumerate(JOINT_SOFT_LIMITS):
-                    if js[i] < lo or js[i] > hi:
-                        deg = math.degrees(js[i])
-                        print(f'[JOG LIMIT] J{i+1} = {deg:.1f}° 소프트 리미트 초과 → 정지')
-                        self._jogging = False
-                        self._robot.move_stop(stop_mode=3)
-                        return
-            time.sleep(0.05)
+            self._robot.move_stop(stop_mode=1)
+        time.sleep(0.05)
+        self._jogging = False
+        self._jog_cmd = None
 
     def move_gripper(self, pos: int):
         if not self._robot_ready:
@@ -526,13 +544,15 @@ async def api_move(request: Request):
 
     b   = await request.json()
 
-    # VLA 직접 delta 명령: dx, dy, dz, drx, dry, drz를 직접 받음
+    # delta 명령 (VLA 추론): jog 중이면 먼저 정지
     if any(k in b for k in ['dx', 'dy', 'dz', 'drx', 'dry', 'drz']):
+        if _server._jogging:
+            _server.stop_jog()
+            await asyncio.sleep(0.1)
         delta = {k: b[k] for k in ['dx', 'dy', 'dz', 'drx', 'dry', 'drz'] if k in b}
         ok, msg = _server.move_delta(**delta)
         return JSONResponse({'ok': ok, 'message': msg})
 
-    # 일반 명령
     cmd = b.get('command', 'stop')
 
     if cmd == 'stop':
@@ -549,10 +569,9 @@ async def api_move(request: Request):
         threading.Thread(target=lambda: _server._robot.move_line(pose, velocity=velocity), daemon=True).start()
         return JSONResponse({'ok': True})
 
-    if cmd not in JOG_AXIS_MAP:
+    if cmd not in JOG_CMD_DELTA:
         return JSONResponse({'ok': False, 'error': f'알 수 없는 커맨드: {cmd}'}, status_code=400)
 
-    # 버튼 hold → jog 모드로 연속 이동
     speed_scale = float(b.get('speed_scale', 1.0))
     angle_scale = float(b.get('angle_scale', 1.0))
     _server.start_jog(cmd, speed_scale=speed_scale, angle_scale=angle_scale)

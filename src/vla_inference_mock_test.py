@@ -32,7 +32,7 @@ st.set_page_config(
 
 # 사용 가능한 데이터셋 경로 (우선순위 순)
 _CANDIDATE_PATHS = [
-    Path("/home/user/robot_workspace/vla_ws/data/fin/vla_dataset_v0.5.2"),
+    Path("/home/user/robot_workspace/vla_ws/data/fin/vla_dataset_v0.4.6"),
 ]
 
 # 실제 존재하는 경로 선택
@@ -383,9 +383,9 @@ with st.expander("액션 타임라인 차트", expanded=True):
         frames_idx  = ep_df["frame_index"].values
 
         fig = make_subplots(
-            rows=2, cols=1, shared_xaxes=True,
-            subplot_titles=("위치 델타 (mm)", "그리퍼 다음 상태 (/ 740)"),
-            vertical_spacing=0.15,
+            rows=3, cols=1, shared_xaxes=True,
+            subplot_titles=("위치 델타 (mm)", "회전 델타 (°)", "그리퍼 다음 상태 (/ 740)"),
+            vertical_spacing=0.1,
         )
         _mk = dict(size=4, opacity=0.6)
         fig.add_trace(go.Scatter(x=frames_idx, y=actions_mat[:, 0] * 1000,
@@ -397,9 +397,18 @@ with st.expander("액션 타임라인 차트", expanded=True):
         fig.add_trace(go.Scatter(x=frames_idx, y=actions_mat[:, 2] * 1000,
                                  name="ΔZ (mm)", mode="lines+markers", marker=_mk,
                                  line=dict(color="#3B82F6", width=1.5)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=frames_idx, y=actions_mat[:, 3] * 57.2958,
+                                 name="ΔRx (°)", mode="lines+markers", marker=_mk,
+                                 line=dict(color="#FBBF24", width=1.5)), row=2, col=1)
+        fig.add_trace(go.Scatter(x=frames_idx, y=actions_mat[:, 4] * 57.2958,
+                                 name="ΔRy (°)", mode="lines+markers", marker=_mk,
+                                 line=dict(color="#EC4899", width=1.5)), row=2, col=1)
+        fig.add_trace(go.Scatter(x=frames_idx, y=actions_mat[:, 5] * 57.2958,
+                                 name="ΔRz (°)", mode="lines+markers", marker=_mk,
+                                 line=dict(color="#2DD4BF", width=1.5)), row=2, col=1)
         fig.add_trace(go.Scatter(x=frames_idx, y=actions_mat[:, 6] * 740,
                                  name="Grip_next", mode="lines+markers", marker=_mk,
-                                 line=dict(color="#F59E0B", width=1.5)), row=2, col=1)
+                                 line=dict(color="#F59E0B", width=1.5)), row=3, col=1)
 
         fig.add_vline(x=selected_frame, line_width=2, line_color="#FACC15",
                       annotation_text=f"F{selected_frame}", annotation_position="top right")
@@ -407,12 +416,13 @@ with st.expander("액션 타임라인 차트", expanded=True):
             fig.add_vline(x=grip_change_frame, line_width=1.5, line_dash="dash", line_color="#C084FC",
                           annotation_text=f"파지 F{grip_change_frame}", annotation_position="top left")
 
-        fig.update_layout(height=420, margin=dict(t=50, b=30, l=60, r=20),
-                          template="plotly_dark", legend=dict(orientation="h", y=1.08),
+        fig.update_layout(height=580, margin=dict(t=50, b=30, l=60, r=20),
+                          template="plotly_dark", legend=dict(orientation="h", y=1.05),
                           clickmode="event+select")
-        fig.update_xaxes(title_text="Frame (클릭하면 해당 프레임으로 이동)", row=2, col=1)
+        fig.update_xaxes(title_text="Frame (클릭하면 해당 프레임으로 이동)", row=3, col=1)
         fig.update_yaxes(title_text="mm", row=1, col=1)
-        fig.update_yaxes(title_text="/ 740", row=2, col=1)
+        fig.update_yaxes(title_text="°", row=2, col=1)
+        fig.update_yaxes(title_text="/ 740", row=3, col=1)
 
         event = st.plotly_chart(fig, use_container_width=True, on_select="rerun")
         if event and event.selection and event.selection.points:
@@ -511,7 +521,9 @@ col_inst, col_btn = st.columns([3, 1])
 with col_inst:
     instruction = st.text_input(
         "작업 지시문",
-        value="Approach to the strawberry stem.",
+        # value="Approach to the strawberry stem.",
+        value="Grasp the strawberry stem and pick it.",
+        # value="Find the path to the strawberry stem and grasp it.",
         help="VLA에 전달할 작업 지시"
     )
 with col_btn:
@@ -706,10 +718,11 @@ if "last_chunk" in st.session_state:
         import plotly.graph_objects as go
 
         fig_c = make_subplots(
-            rows=2, cols=1, shared_xaxes=True,
+            rows=3, cols=1, shared_xaxes=True,
             subplot_titles=("위치 델타 (mm) — 실선: 모델 청크 / 점선: GT(데이터셋)",
+                            "회전 델타 (°) — 실선: 모델 청크 / 점선: GT(데이터셋)",
                             "그리퍼 (/740)"),
-            vertical_spacing=0.15,
+            vertical_spacing=0.1,
         )
         _mk_c = dict(size=4, opacity=0.7)
         for dim, color, label in [(0, "#EF4444", "ΔX"), (1, "#22C55E", "ΔY"), (2, "#3B82F6", "ΔZ")]:
@@ -722,22 +735,33 @@ if "last_chunk" in st.session_state:
                     x=_steps[:len(_gt_mat)], y=_gt_mat[:, dim] * 1000,
                     name=f"{label} GT", mode="lines",
                     line=dict(color=color, width=1, dash="dash"), opacity=0.5), row=1, col=1)
+        for dim, color, label in [(3, "#FBBF24", "ΔRx"), (4, "#EC4899", "ΔRy"), (5, "#2DD4BF", "ΔRz")]:
+            fig_c.add_trace(go.Scatter(
+                x=_steps, y=_ck_mat[:, dim] * 57.2958,
+                name=f"{label} 모델", mode="lines+markers", marker=_mk_c,
+                line=dict(color=color, width=1.5)), row=2, col=1)
+            if _gt_mat is not None:
+                fig_c.add_trace(go.Scatter(
+                    x=_steps[:len(_gt_mat)], y=_gt_mat[:, dim] * 57.2958,
+                    name=f"{label} GT", mode="lines",
+                    line=dict(color=color, width=1, dash="dash"), opacity=0.5), row=2, col=1)
         fig_c.add_trace(go.Scatter(
             x=_steps, y=_ck_mat[:, 6] * 740,
             name="Grip 모델", mode="lines+markers", marker=_mk_c,
-            line=dict(color="#F59E0B", width=1.5)), row=2, col=1)
+            line=dict(color="#F59E0B", width=1.5)), row=3, col=1)
         if _gt_mat is not None:
             fig_c.add_trace(go.Scatter(
                 x=_steps[:len(_gt_mat)], y=_gt_mat[:, 6] * 740,
                 name="Grip GT", mode="lines",
-                line=dict(color="#F59E0B", width=1, dash="dash"), opacity=0.5), row=2, col=1)
+                line=dict(color="#F59E0B", width=1, dash="dash"), opacity=0.5), row=3, col=1)
 
-        fig_c.update_layout(height=480, margin=dict(t=50, b=30, l=60, r=20),
+        fig_c.update_layout(height=650, margin=dict(t=100, b=30, l=60, r=20),
                             template="plotly_dark",
-                            legend=dict(orientation="h", y=1.1))
-        fig_c.update_xaxes(title_text="청크 내 스텝 # (= 시작 프레임으로부터의 미래 스텝)", row=2, col=1)
+                            legend=dict(orientation="h", y=1.12, x=0, xanchor="left"))
+        fig_c.update_xaxes(title_text="청크 내 스텝 # (= 시작 프레임으로부터의 미래 스텝)", row=3, col=1)
         fig_c.update_yaxes(title_text="mm", row=1, col=1)
-        fig_c.update_yaxes(title_text="/ 740", row=2, col=1)
+        fig_c.update_yaxes(title_text="°", row=2, col=1)
+        fig_c.update_yaxes(title_text="/ 740", row=3, col=1)
         st.plotly_chart(fig_c, use_container_width=True)
     except ImportError:
         st.warning("plotly 미설치 — 차트 생략")

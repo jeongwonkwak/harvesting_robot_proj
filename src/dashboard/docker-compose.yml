@@ -76,8 +76,9 @@ services:
       - CAM1_TOPIC=/camera2/camera2/color/image_raw
       - REALSENSE_SERIAL_0=215122254786
       - REALSENSE_SERIAL_1=342622303457
-      - YOLO_MODEL=/models/strawberry_yolo26m_unified/weights/last.pt
-      - YOLO_CONF=0.3
+      - YOLO_SEG_MODEL=
+      - YOLO_POSE_MODEL=
+      - YOLO_CONF=0.15
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
       - PYTHONUNBUFFERED=1
       # 카메라는 harvest-camera 컨테이너에서 실행하므로 USB 직접 접근 비활성화

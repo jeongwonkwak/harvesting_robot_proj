@@ -23,10 +23,10 @@ from lerobot.scripts.augment_dataset_quantile_stats import compute_quantile_stat
 from lerobot.datasets import LeRobotDataset, write_stats
 
 WORKSPACE   = Path(__file__).resolve().parent.parent
-DEFAULT_SRC = WORKSPACE / "data/mid/vla_dataset_v0.5.2"
-DEFAULT_DST = WORKSPACE / "data/fin/vla_dataset_v0.5.2"
+DEFAULT_SRC = WORKSPACE / "data/mid/vla_dataset_v0.7.0"
+DEFAULT_DST = WORKSPACE / "data/fin/vla_dataset_v0.7.0"
 CONTAINER   = "vla-train"
-REPO_ID     = "vla_dataset_v0.5.2"
+REPO_ID     = "vla_dataset_v0.7.0"
 
 # 호스트 data/ → 컨테이너 /data/vla/ 마운트 기준
 HOST_DATA_VLA = WORKSPACE / "data"

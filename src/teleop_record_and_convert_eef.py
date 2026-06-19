@@ -160,10 +160,8 @@ class TeleopRecordAndConvertEEF:
         rs1_cmd = [
             'ros2', 'launch', 'realsense2_camera', 'rs_launch.py',
             'camera_namespace:=camera', 'camera_name:=camera',
-            'enable_color:=true', 'enable_depth:=true',
+            'enable_color:=true', 'enable_depth:=false',
             'rgb_camera.color_profile:=640x480x30',
-            'depth_module.depth_profile:=640x480x30',
-            'align_depth.enable:=true',
         ]
         if self._serial_cam1:
             rs1_cmd.append(f"serial_no:='{self._serial_cam1}'")

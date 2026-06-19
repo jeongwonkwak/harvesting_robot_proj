@@ -46,8 +46,9 @@ CAM0_TOPIC   = os.environ.get("CAM0_TOPIC", "/camera/camera/color/image_raw")
 CAM1_TOPIC   = os.environ.get("CAM1_TOPIC", "/camera2/camera2/color/image_raw")
 CAM0_SERIAL  = os.environ.get("REALSENSE_SERIAL_0", "215122254786")
 CAM1_SERIAL  = os.environ.get("REALSENSE_SERIAL_1", "342622303457")
-YOLO_MODEL   = os.environ.get("YOLO_MODEL", "")
-YOLO_CONF    = float(os.environ.get("YOLO_CONF", "0.3"))
+YOLO_SEG_MODEL  = os.environ.get("YOLO_SEG_MODEL",  os.environ.get("YOLO_MODEL", ""))  # 비활성화
+YOLO_POSE_MODEL = os.environ.get("YOLO_POSE_MODEL", "")
+YOLO_CONF       = float(os.environ.get("YOLO_CONF", "0.3"))
 UPDATE_HZ    = 10.0
 TCP_POLL_HZ  = 5.0
 
@@ -57,73 +58,212 @@ _ROS2_WAIT_S = 8.0
 _JOINT_NAMES = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
 
 _frame_lock      = [threading.Lock(), threading.Lock()]
-_frame_jpeg      = [None, None]          # MJPEG 서버가 서빙하는 최종 JPEG (YOLO 오버레이 포함)
+_frame_jpeg      = [None, None]          # MJPEG 서버가 서빙하는 최종 JPEG
 _frame_last_ros2 = [0.0, 0.0]
 
 # ── YOLO 비동기 워커 (전용 스레드) ───────────────────────────────────────────
-# _raw_frame[0]: 캡처된 최신 raw BGR 프레임 (numpy). YOLO 워커가 이걸 소비.
-# _img_cb / _usb_camera_worker 는 raw 저장만 하고 즉시 리턴 → ROS2 스레드 비차단.
-_raw_frame      = [None, None]
-_raw_frame_lock = [threading.Lock(), threading.Lock()]
-_yolo           = None
+# _raw_frame[0]: YOLO 워커가 소비하는 최신 raw BGR 프레임
+# _raw_display[0]: 합성 워커가 소비하는 최신 raw BGR 프레임 (YOLO와 별도)
+# _yolo_overlay[0]: YOLO 워커가 생성한 오버레이 BGR (raw에 합성)
+_raw_frame       = [None, None]
+_raw_frame_lock  = [threading.Lock(), threading.Lock()]
+_raw_display     = [None]               # slot 0 raw ndarray (합성용)
+_raw_display_lock = threading.Lock()
+_yolo_overlay    = [None]               # slot 0 YOLO overlay ndarray
+_yolo_overlay_lock = threading.Lock()
+_yolo_seg        = None   # 세그멘테이션 모델 (ripe/unripe/sick)
+_yolo_pose       = None   # 포즈 모델 (줄기 3키포인트)
 _yolo_model_lock = threading.Lock()
+_yolo_det_count      = 0      # 가장 최근 프레임에서 감지된 ripe 딸기 수
+_yolo_harvest_cand   = False  # 현재 프레임에 HARVEST 후보(ripe 마스크 안 줄기) 존재 여부
+
+# seg 클래스 시각화 (BGR)
+_SEG_COLORS = {0: (60, 60, 220), 1: (50, 200, 50), 2: (30, 200, 200)}
+_SEG_NAMES  = {0: "ripe", 1: "unripe", 2: "sick"}
+# 키포인트 시각화: stem_base=주황, stem_mid=빨강, stem_tip=초록 (BGR)
+_KPT_COLORS = [(30, 120, 255), (30, 30, 220), (50, 200, 50)]
 
 
 def _load_yolo():
-    global _yolo
-    if not YOLO_MODEL or not Path(YOLO_MODEL).exists():
-        print(f"[YOLO] 모델 없음 (YOLO_MODEL={YOLO_MODEL!r})")
-        return
+    global _yolo_seg, _yolo_pose
     try:
         from ultralytics import YOLO as _YOLO
-        model = _YOLO(YOLO_MODEL)
-        dummy = np.zeros((480, 640, 3), dtype=np.uint8)
-        model.predict(dummy, verbose=False, conf=YOLO_CONF)
-        with _yolo_model_lock:
-            _yolo = model
-        print(f"[YOLO] 모델 로드 완료: {YOLO_MODEL}")
-    except Exception as e:
-        print(f"[YOLO] 로드 실패: {e}")
+    except ImportError:
+        print("[YOLO] ultralytics 미설치 — 모델 로드 불가")
+        return
 
+    dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    if YOLO_SEG_MODEL and Path(YOLO_SEG_MODEL).exists():
+        try:
+            m = _YOLO(YOLO_SEG_MODEL)
+            m.predict(dummy, verbose=False, conf=YOLO_CONF)
+            with _yolo_model_lock:
+                _yolo_seg = m
+            print(f"[YOLO] 세그 모델 로드 완료: {YOLO_SEG_MODEL}")
+        except Exception as e:
+            print(f"[YOLO] 세그 모델 로드 실패: {e}")
+    else:
+        print(f"[YOLO] 세그 모델 없음 (YOLO_SEG_MODEL={YOLO_SEG_MODEL!r})")
+
+    if YOLO_POSE_MODEL and Path(YOLO_POSE_MODEL).exists():
+        try:
+            m = _YOLO(YOLO_POSE_MODEL)
+            m.predict(dummy, verbose=False, conf=YOLO_CONF)
+            with _yolo_model_lock:
+                _yolo_pose = m
+            print(f"[YOLO] 포즈 모델 로드 완료: {YOLO_POSE_MODEL}")
+        except Exception as e:
+            print(f"[YOLO] 포즈 모델 로드 실패: {e}")
+    else:
+        print(f"[YOLO] 포즈 모델 없음 (YOLO_POSE_MODEL={YOLO_POSE_MODEL!r})")
+
+
+YOLO_INFER_W, YOLO_INFER_H = 320, 240  # 추론 해상도 (화면 표시는 원본 640×480 유지)
 
 def _yolo_worker():
-    """슬롯 0 전용 YOLO 추론 스레드. raw 프레임을 소비해 annotated JPEG을 생성."""
-    enc = [cv2.IMWRITE_JPEG_QUALITY, 50]
+    """슬롯 0 전용 YOLO 추론 스레드. 320×240으로 축소 추론 후 결과를 원본 스케일로 복원."""
+    global _yolo_det_count, _yolo_harvest_cand
+
     while True:
-        # raw 프레임 가져오기
         with _raw_frame_lock[0]:
             frame = _raw_frame[0]
-            _raw_frame[0] = None  # 소비했음
+            _raw_frame[0] = None
 
         if frame is None:
             time.sleep(0.01)
             continue
 
         with _yolo_model_lock:
-            model = _yolo
+            seg_model  = _yolo_seg
+            pose_model = _yolo_pose
 
-        if model is not None:
+        H_orig, W_orig = frame.shape[:2]
+        sx = W_orig / YOLO_INFER_W  # x 스케일 복원 비율
+        sy = H_orig / YOLO_INFER_H
+
+        # 추론용 축소 이미지
+        small = cv2.resize(frame, (YOLO_INFER_W, YOLO_INFER_H))
+
+        ripe_count  = 0
+        has_harvest = False
+        seg_entries = []
+
+        # ── 세그멘테이션 추론 (320×240) ────────────────────────────────────
+        if seg_model is not None:
             try:
-                results = model.predict(frame, verbose=False, conf=YOLO_CONF)
-                for box in results[0].boxes:
+                r0 = seg_model.predict(small, verbose=False, conf=YOLO_CONF)[0]
+                overlay = frame.copy()
+                for i, box in enumerate(r0.boxes):
                     cls_id = int(box.cls[0])
+                    conf_v = float(box.conf[0])
+                    # 좌표를 원본 해상도로 복원
                     x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
-                    conf   = float(box.conf[0])
-                    color  = (0, 0, 255) if cls_id == 0 else (0, 200, 0)
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(frame,
-                                f"{model.names[cls_id]} {conf:.2f}",
-                                (x1, max(y1 - 8, 12)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-            except Exception:
-                pass
+                    x1, x2 = int(x1*sx), int(x2*sx)
+                    y1, y2 = int(y1*sy), int(y2*sy)
+                    color = _SEG_COLORS.get(cls_id, (200, 200, 200))
 
+                    poly = None
+                    if r0.masks is not None and i < len(r0.masks.xy):
+                        poly_s = np.array(r0.masks.xy[i], dtype=np.float32)
+                        if len(poly_s) >= 3:
+                            poly = (poly_s * [sx, sy]).astype(np.int32)
+                            cv2.fillPoly(overlay, [poly], color)
+
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                    cv2.putText(frame, f"{_SEG_NAMES.get(cls_id, str(cls_id))} {conf_v:.2f}",
+                                (x1, max(y1 - 8, 12)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+
+                    seg_entries.append({'cls_id': cls_id, 'poly': poly,
+                                        'box': (x1, y1, x2, y2)})
+                    if cls_id == 0:
+                        ripe_count += 1
+
+                cv2.addWeighted(overlay, 0.4, frame, 0.6, 0, frame)
+            except Exception as e:
+                print(f"[YOLO] 세그 추론 오류: {e}")
+
+        # ── 포즈 추론 (320×240) ─────────────────────────────────────────────
+        if pose_model is not None:
+            try:
+                r0 = pose_model.predict(small, verbose=False, conf=YOLO_CONF)[0]
+                for i, box in enumerate(r0.boxes):
+                    bconf = float(box.conf[0])
+                    bx1, by1, bx2, by2 = [int(v) for v in box.xyxy[0].tolist()]
+                    bx1, bx2 = int(bx1*sx), int(bx2*sx)
+                    by1, by2 = int(by1*sy), int(by2*sy)
+                    cx, cy = (bx1 + bx2) // 2, (by1 + by2) // 2
+
+                    is_harvest = False
+                    for seg in seg_entries:
+                        if seg['cls_id'] != 0:
+                            continue
+                        if seg['poly'] is not None and len(seg['poly']) >= 3:
+                            if cv2.pointPolygonTest(seg['poly'],
+                                                    (float(cx), float(cy)), False) >= 0:
+                                is_harvest = True
+                                break
+                        else:
+                            sx1, sy1, sx2, sy2 = seg['box']
+                            if sx1 <= cx <= sx2 and sy1 <= cy <= sy2:
+                                is_harvest = True
+                                break
+
+                    if r0.keypoints is not None and i < len(r0.keypoints.data):
+                        pts = r0.keypoints.data[i].cpu().numpy()
+                        prev = None
+                        for ki, (kx, ky, kv) in enumerate(pts):
+                            if kv < 0.3:
+                                prev = None
+                                continue
+                            kc = _KPT_COLORS[ki]
+                            kxi, kyi = int(kx * sx), int(ky * sy)
+                            if prev is not None:
+                                cv2.line(frame, prev, (kxi, kyi), (180, 180, 180), 2)
+                            cv2.circle(frame, (kxi, kyi), 5, kc, -1)
+                            cv2.circle(frame, (kxi, kyi), 5, (255, 255, 255), 1)
+                            prev = (kxi, kyi)
+
+                    if is_harvest:
+                        has_harvest = True
+                        cv2.rectangle(frame, (bx1, by1), (bx2, by2), (0, 255, 255), 3)
+                        cv2.putText(frame, f"HARVEST {bconf:.2f}",
+                                    (bx1, max(by1 - 22, 22)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
+            except Exception as e:
+                print(f"[YOLO] 포즈 추론 오류: {e}")
+
+        _yolo_det_count    = ripe_count
+        _yolo_harvest_cand = has_harvest
+
+        # annotated frame을 overlay로 저장 (합성 워커가 raw 위에 덮어씀)
         try:
-            _, buf = cv2.imencode(".jpg", frame, enc)
-            with _frame_lock[0]:
-                _frame_jpeg[0] = buf.tobytes()
+            with _yolo_overlay_lock:
+                _yolo_overlay[0] = frame  # YOLO가 그린 annotated BGR ndarray
         except Exception:
             pass
+
+
+def _display_composer_worker():
+    """슬롯 0: raw 프레임에 YOLO overlay를 합성해 30fps로 _frame_jpeg[0] 갱신."""
+    enc = [cv2.IMWRITE_JPEG_QUALITY, 50]
+    while True:
+        with _raw_display_lock:
+            raw = _raw_display[0]
+        if raw is not None:
+            with _yolo_overlay_lock:
+                overlay = _yolo_overlay[0]
+            # overlay가 있으면 합성, 없으면 raw 그대로
+            display = overlay if overlay is not None else raw
+            try:
+                _, buf = cv2.imencode(".jpg", display, enc)
+                with _frame_lock[0]:
+                    _frame_jpeg[0] = buf.tobytes()
+            except Exception:
+                pass
+        time.sleep(1 / 30)
 
 
 def _make_placeholder(text: str) -> bytes:
@@ -203,12 +343,13 @@ def _run_mjpeg_server():
 class ROS2Bridge(Node):
     def __init__(self):
         super().__init__("harvest_ros2_bridge")
-        self._lock        = threading.Lock()
-        self._joint_deg   = [0.0] * 6
-        self._tcp_pose    = [0.0] * 6
-        self._tcp_ready   = False
-        self._tcp_pending = False
-        self._grip_ratio  = None   # teleop-api가 publish하는 그리퍼 위치 ratio(0~1)
+        self._lock           = threading.Lock()
+        self._joint_deg      = [0.0] * 6
+        self._tcp_pose       = [0.0] * 6
+        self._tcp_ready      = False
+        self._tcp_pending    = False
+        self._grip_ratio     = None   # teleop-api가 publish하는 그리퍼 위치 ratio(0~1)
+        self._last_ripe_count = 0     # _write_state 에서 신규 감지 판별용
 
         self.create_subscription(JointState, "/dsr01/joint_states",
                                  self._joint_cb, 10)
@@ -229,10 +370,9 @@ class ROS2Bridge(Node):
             self.create_timer(1.0 / TCP_POLL_HZ, self._poll_tcp)
 
         if _CV2_AVAILABLE:
-            # 카메라 토픽은 BEST_EFFORT QoS (RealSense 기본값)
             cam_qos = QoSProfile(
-                reliability=ReliabilityPolicy.BEST_EFFORT,
-                durability=DurabilityPolicy.VOLATILE,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
                 history=HistoryPolicy.KEEP_LAST,
                 depth=1,
             )
@@ -297,7 +437,10 @@ class ROS2Bridge(Node):
                 arr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
             _frame_last_ros2[slot] = time.time()
             if slot == 0:
-                # YOLO 워커 스레드가 소비
+                # 합성 워커용 raw 저장 (항상 최신 프레임 유지)
+                with _raw_display_lock:
+                    _raw_display[0] = arr.copy()
+                # YOLO 워커에도 전달
                 with _raw_frame_lock[0]:
                     _raw_frame[0] = arr
             else:
@@ -329,6 +472,14 @@ class ROS2Bridge(Node):
                                     "raw_pos": raw_pos,
                                     "state": state,
                                     "force": s.get("gripper", {}).get("force", 30.0)}
+            # YOLO 감지 수: 이전 write 시점보다 ripe 수가 늘었을 때만 detected_count 누적
+            cur_ripe = _yolo_det_count
+            if cur_ripe > self._last_ripe_count:
+                s["detected_count"] = s.get("detected_count", 0) + (cur_ripe - self._last_ripe_count)
+            self._last_ripe_count = cur_ripe
+            s["ripe_visible"]      = cur_ripe > 0
+            s["harvest_candidate"] = _yolo_harvest_cand
+
             s["last_updated"] = datetime.now().isoformat()
             tmp = STATE_FILE.with_suffix(".tmp")
             tmp.write_text(json.dumps(s, ensure_ascii=False, indent=2))
@@ -415,6 +566,7 @@ def main():
     threading.Thread(target=_run_mjpeg_server, daemon=True).start()
     threading.Thread(target=_load_yolo, daemon=True).start()
     threading.Thread(target=_yolo_worker, daemon=True).start()
+    threading.Thread(target=_display_composer_worker, daemon=True).start()
     time.sleep(0.5)
 
     # ROS2 토픽 없을 때 USB 폴백 (USB_FALLBACK=false 로 비활성화 가능)
