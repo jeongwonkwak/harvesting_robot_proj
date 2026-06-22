@@ -1,0 +1,52 @@
+dataset_repo_id: /data/vla/fin/vla_dataset_v0.6.0
+job_name: pi05_sft_v.0.6.0
+
+# wandb
+wandb:
+  enable: false
+  project: jeongwon-vla
+
+# 학습 설정
+n_epochs: 10
+batch_size: 12
+save_freq: 1426       # 체크포인트 저장 주기 (스텝)
+log_freq: 50         # 로그 출력 주기 (스텝)
+seed: 1000
+num_workers: 4
+
+# 옵티마이저
+lr: 1e-5
+weight_decay: 1e-10
+grad_clip_norm: 10.0
+
+# 스케줄러
+warmup_steps: 100
+decay_steps:           # 미설정 시 총 스텝 수로 자동 설정
+decay_lr: 2.5e-6
+
+# 카메라 키 매핑 (dataset키: policy키) — 없으면 생략
+rename_map: '{"observation.images.camera1": "observation.images.base_0_rgb", "observation.images.camera2": "observation.images.left_wrist_0_rgb"}'
+
+# 모델
+base_model_path: /models/public/pi05_base  # lerobot SmolVLA 베이스 체크포인트
+# vlm_model_name: PI05는 미사용 (PaliGemma 가중치가 base_model_path의 model.safetensors에 포함됨)
+freeze_vision_encoder: true   # vision encoder 고정 여부
+gradient_checkpointing: true
+chunk_size: 50                # action chunk 크기
+
+# LoRA (PEFT)
+peft:
+  r: 32
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj, action_in_proj, action_out_proj, time_mlp_in, time_mlp_out]
+
+  # ① Gemma action expert의 attention layers    
+  # *.gemma_expert.*.self_attn.q_proj                                                         
+  # *.gemma_expert.*.self_attn.v_proj       
+  # action expert(300M Gemma)의 모든 레이어 attention Q, V projection                         
+                                                                                            
+  # ② Action 관련 projection layers (full fine-tune)                                          
+  # state_proj          # state → embedding                                                   
+  # action_in_proj      # action input projection                                             
+  # action_out_proj     # action output projection                                            
+  # action_time_mlp_in  # time embedding MLP input                                            
+  # action_time_mlp_out # time embedding MLP output    

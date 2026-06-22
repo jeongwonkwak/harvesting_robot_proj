@@ -5,9 +5,9 @@ from pathlib import Path
 
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
-ADAPTER_PATH = Path("/models/ours/pi05_sft_v.0.5.3/checkpoints/001345/pretrained_model")
+ADAPTER_PATH = Path("/models/ours/pi05_sft_v.0.7.0/checkpoints/009700/pretrained_model")
 BASE_PATH    = Path("/models/public/pi05_base")
-OUTPUT_PATH  = Path("/models/ours/pi05_sft_v.0.5.3/merged/5ep")
+OUTPUT_PATH  = Path("/models/ours/pi05_sft_v.0.7.0/merged/10ep")
 
 import torch
 from peft import PeftModel

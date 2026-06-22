@@ -5,7 +5,7 @@
 
 set -eo pipefail
 
-DEFAULT_CONFIG="/workspace/scripts/vla_sft_v.0.5.3.yaml"
+DEFAULT_CONFIG="/workspace/scripts/vla_sft_v.0.7.0.yaml"
 CONFIG="${1:-$DEFAULT_CONFIG}"
 DECAY_STEPS_OVERRIDE="${2:-}"
 
