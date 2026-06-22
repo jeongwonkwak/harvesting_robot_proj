@@ -10,12 +10,12 @@
   "robot_ready": true,
   "robot_error": "",
   "joint_angles": [
-    267.7,
-    -54.47,
-    41.35,
-    -35.87,
-    -76.49,
-    104.31
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
   ],
   "tcp_pose": [
     119.51,
@@ -43,11 +43,11 @@
   },
   "pending_joint_command": null,
   "pending_tcp_command": null,
-  "last_updated": "2026-06-19T08:27:13.912827",
+  "last_updated": "2026-06-22T06:22:08.502877",
   "gripper": {
-    "position": 18.9,
-    "raw_pos": 600,
-    "state": "grasping",
+    "position": 100.0,
+    "raw_pos": 0,
+    "state": "open",
     "force": 30.0
   },
   "planned_duration_hours": 0,

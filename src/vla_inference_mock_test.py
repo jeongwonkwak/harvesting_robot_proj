@@ -32,7 +32,7 @@ st.set_page_config(
 
 # 사용 가능한 데이터셋 경로 (우선순위 순)
 _CANDIDATE_PATHS = [
-    Path("/home/user/robot_workspace/vla_ws/data/fin/vla_dataset_v0.4.6"),
+    Path("/home/user/robot_workspace/vla_ws/data/fin/vla_dataset_v0.7.0"),
 ]
 
 # 실제 존재하는 경로 선택
@@ -522,8 +522,8 @@ with col_inst:
     instruction = st.text_input(
         "작업 지시문",
         # value="Approach to the strawberry stem.",
-        value="Grasp the strawberry stem and pick it.",
-        # value="Find the path to the strawberry stem and grasp it.",
+        # value="Grasp the strawberry stem and pick it.",
+        value="Find the path to the strawberry stem and grasp it.",
         help="VLA에 전달할 작업 지시"
     )
 with col_btn:

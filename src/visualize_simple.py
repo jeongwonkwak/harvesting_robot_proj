@@ -8,8 +8,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-DATASET_DIR = Path('/home/user/robot_workspace/vla_ws/data/mid/vla_dataset_v0.5.0')
-STATS_FILE = Path('/home/user/robot_workspace/vla_ws/data/fin/vla_dataset_v0.5.0/meta/stats.json')
+DATASET_DIR = Path('/home/user/robot_workspace/vla_ws/data/mid/vla_dataset_v0.7.0')
+STATS_FILE = Path('/home/user/robot_workspace/vla_ws/data/fin/vla_dataset_v0.7.0/meta/stats.json')
 
 # e0509 DH 파라미터
 DH_PARAMS = [
@@ -193,7 +193,7 @@ frame = min(frame, len(ep_data)-1)  # 프레임 범위 내 유지
 st.divider()
 
 # 그래프 - Episode Statistics (에피소드 선택 후)
-st.markdown("### 📈 Episode Statistics")
+st.markdown("### Episode Statistics")
 
 # 통계 계산
 episode_frames = df.groupby('episode_index').size()
