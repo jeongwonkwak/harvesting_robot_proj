@@ -3164,10 +3164,6 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
     @app.post("/api/vla/predict")
     async def vla_predict(request: Request):
         """VLA 추론 엔드포인트: Action Chunking(10 steps) + Doosan Spline Blending"""
-        from io import BytesIO
-        try: from PIL import Image
-        except ImportError: return JSONResponse({"ok": False, "error": "PIL not installed"}, status_code=400)
-
         req_body = await request.json()
         instruction = req_body.get("instruction", "Find the path to the strawberry stem and grasp it.")
         reset_episode = req_body.get("reset_episode", False)
@@ -3176,21 +3172,15 @@ def make_app(demo=False, camera_id=0, camera_id_1=-1, no_camera=False,
         if not reset_episode:
             return JSONResponse({"ok": True, "queued": True})
 
-        # reset_episode=True → 10개 action 추론 후 spline으로 일괄 전송
+        # reset_episode=True → 50개 action 추론 후 spline으로 일괄 전송
         # 카메라 이미지 취득
         with _cam_locks[0]: cam0 = _cam_jpegs[0]
         with _cam_locks[1]: cam1 = _cam_jpegs[1]
         if not cam0 or not cam1:
             return JSONResponse({"ok": False, "error": "카메라 이미지 없음"}, status_code=503)
 
-        def encode_jpeg(jpeg_bytes):
-            img = Image.open(BytesIO(jpeg_bytes)).convert('RGB')
-            buf = BytesIO()
-            img.save(buf, format='JPEG', quality=85)
-            return base64.b64encode(buf.getvalue()).decode('utf-8')
-
-        cam0_b64 = encode_jpeg(cam0)
-        cam1_b64 = encode_jpeg(cam1)
+        cam0_b64 = base64.b64encode(cam0).decode('utf-8')
+        cam1_b64 = base64.b64encode(cam1).decode('utf-8')
 
         s = _load()
         tcp_pose = s.get("tcp_pose", [0]*6)  # mm/deg
